@@ -1,0 +1,1358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Roster</title>
+<link href="https://fonts.googleapis.com/css2?family=Berkeley+Mono:wght@400;500;600;700&family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #08080c;
+    --bg-surface: #0e0e14;
+    --bg-elevated: #14141e;
+    --bg-hover: #1a1a28;
+    --border: #1c1c2e;
+    --border-focus: #2e2e4a;
+    --text: #d8d8e8;
+    --text-secondary: #7a7a9a;
+    --text-muted: #3e3e58;
+    --accent: #d4a0ff;
+    --accent-dim: #9060c0;
+    --green: #5afa90;
+    --green-bg: rgba(90, 250, 144, .06);
+    --green-border: rgba(90, 250, 144, .15);
+    --red: #ff6b6b;
+    --amber: #ffc44d;
+    --blue: #6baaff;
+    --gcp: #5a9aff;
+    --aws: #ffaa33;
+    --local: #5afa90;
+    --mono: 'Berkeley Mono', 'JetBrains Mono', 'Fira Code', monospace;
+    --sans: 'Instrument Sans', 'DM Sans', system-ui, sans-serif;
+  }
+
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:var(--sans); background:var(--bg); color:var(--text); min-height:100vh; }
+
+  body::before {
+    content:''; position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(ellipse 80% 60% at 20% 10%, rgba(212,160,255,.03), transparent),
+      radial-gradient(ellipse 60% 40% at 80% 90%, rgba(90,250,144,.02), transparent);
+  }
+
+  .app { position:relative; z-index:1; display:flex; height:100vh; }
+
+  /* ── Sidebar ── */
+  .sidebar {
+    width: 260px; min-width:260px;
+    background: var(--bg-surface);
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    padding: 20px 0;
+  }
+
+  .sidebar-logo {
+    padding: 0 20px 20px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 12px;
+  }
+
+  .sidebar-logo h1 {
+    font-family: var(--mono);
+    font-size: 17px;
+    font-weight: 600;
+    display: flex; align-items: center; gap: 10px;
+  }
+
+  .sidebar-logo h1 .icon {
+    width:30px; height:30px; border-radius:8px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-dim));
+    display:flex; align-items:center; justify-content:center;
+    font-size:14px; color:#08080c; font-weight:700;
+  }
+
+  .sidebar-logo small {
+    display:block; color:var(--text-secondary); font-size:11px; margin-top:4px; font-family:var(--mono);
+  }
+
+  .nav-section {
+    padding: 8px 12px;
+    font-family: var(--mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--text-muted);
+  }
+
+  .instance-list { flex:1; overflow-y:auto; padding: 0 8px; }
+
+  .instance-item {
+    display: flex; align-items:center; gap:10px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all .15s;
+    margin-bottom: 2px;
+  }
+
+  .instance-item:hover { background: var(--bg-hover); }
+  .instance-item.active { background: var(--bg-elevated); border: 1px solid var(--border-focus); }
+
+  .instance-item .dot {
+    width:8px; height:8px; border-radius:50%; flex-shrink:0;
+  }
+  .dot.online { background:var(--green); box-shadow:0 0 6px rgba(90,250,144,.4); }
+  .dot.busy { background:var(--amber); box-shadow:0 0 6px rgba(255,196,77,.3); }
+  .dot.offline { background:var(--red); opacity:.5; }
+
+  .instance-item .info { flex:1; min-width:0; }
+  .instance-item .info .name {
+    font-family:var(--mono); font-size:13px; font-weight:500;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .instance-item .info .meta {
+    font-size:11px; color:var(--text-secondary); margin-top:2px;
+  }
+
+  .provider-tag {
+    font-family:var(--mono); font-size:9px; font-weight:600;
+    text-transform:uppercase; letter-spacing:.8px;
+    padding:2px 6px; border-radius:4px; border:1px solid;
+  }
+  .provider-tag.gcp { color:var(--gcp); border-color:rgba(90,154,255,.25); }
+  .provider-tag.aws { color:var(--aws); border-color:rgba(255,170,51,.25); }
+  .provider-tag.local { color:var(--local); border-color:rgba(90,250,144,.25); }
+
+  .sidebar-stats {
+    padding: 16px 20px;
+    border-top: 1px solid var(--border);
+    display:flex; gap:16px;
+  }
+  .sidebar-stats .s { text-align:center; flex:1; }
+  .sidebar-stats .s .v { font-family:var(--mono); font-size:20px; font-weight:700; }
+  .sidebar-stats .s .l { font-size:10px; color:var(--text-secondary); margin-top:2px; }
+
+  /* ── Main Panel ── */
+  .main { flex:1; display:flex; flex-direction:column; overflow:hidden; }
+
+  .main-header {
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border);
+    display:flex; align-items:center; justify-content:space-between;
+    background: var(--bg-surface);
+  }
+
+  .main-header h2 {
+    font-family:var(--mono); font-size:16px; font-weight:600;
+    display:flex; align-items:center; gap:10px;
+  }
+
+  .tabs {
+    display:flex; gap:2px; background:var(--bg); border-radius:8px; padding:3px;
+  }
+
+  .tab {
+    font-family:var(--mono); font-size:11px; padding:7px 14px;
+    border-radius:6px; border:none; cursor:pointer;
+    background:transparent; color:var(--text-secondary);
+    transition:all .15s;
+  }
+  .tab:hover { color:var(--text); }
+  .tab.active { background:var(--bg-elevated); color:var(--accent); }
+
+  .main-content {
+    flex:1; overflow-y:auto; padding:24px;
+  }
+
+  .header-actions { display:flex; gap:8px; }
+
+  .btn {
+    font-family:var(--mono); font-size:11px; font-weight:500;
+    padding:8px 16px; border-radius:7px; border:1px solid;
+    cursor:pointer; transition:all .2s; display:flex; align-items:center; gap:6px;
+  }
+  .btn-primary { background:rgba(212,160,255,.1); border-color:rgba(212,160,255,.25); color:var(--accent); }
+  .btn-primary:hover { background:rgba(212,160,255,.18); }
+  .btn-green { background:var(--green-bg); border-color:var(--green-border); color:var(--green); }
+  .btn-green:hover { background:rgba(90,250,144,.12); }
+  .btn-ghost { background:transparent; border-color:var(--border); color:var(--text-secondary); }
+  .btn-ghost:hover { border-color:var(--border-focus); color:var(--text); }
+  .btn-danger { background:transparent; border-color:var(--border); color:var(--text-secondary); }
+  .btn-danger:hover { border-color:rgba(255,107,107,.3); color:var(--red); }
+  .btn:disabled { opacity:.3; cursor:not-allowed; }
+
+  /* ── Overview Tab ── */
+  .overview-grid {
+    display:grid; grid-template-columns:1fr 1fr; gap:16px;
+  }
+
+  .card {
+    background:var(--bg-surface); border:1px solid var(--border);
+    border-radius:12px; padding:20px;
+  }
+
+  .card-title {
+    font-family:var(--mono); font-size:11px; text-transform:uppercase;
+    letter-spacing:1px; color:var(--text-muted); margin-bottom:14px;
+  }
+
+  .resource-row {
+    display:flex; align-items:center; gap:12px; margin-bottom:12px;
+  }
+  .resource-row .label { font-size:12px; color:var(--text-secondary); width:50px; }
+  .resource-row .bar { flex:1; height:5px; background:var(--border); border-radius:3px; overflow:hidden; }
+  .resource-row .bar-fill { height:100%; border-radius:3px; background:var(--accent-dim); transition:width .5s; }
+  .resource-row .val { font-family:var(--mono); font-size:11px; color:var(--text-secondary); width:70px; text-align:right; }
+
+  .context-meter {
+    position:relative; height:10px; background:var(--border); border-radius:5px; overflow:hidden; margin:12px 0 8px;
+  }
+  .context-meter .fill {
+    height:100%; border-radius:5px; transition:width .5s;
+  }
+  .context-meter .fill.low { background: linear-gradient(90deg, var(--green), #4ade80); }
+  .context-meter .fill.mid { background: linear-gradient(90deg, var(--amber), #f59e0b); }
+  .context-meter .fill.high { background: linear-gradient(90deg, var(--red), #ef4444); }
+
+  .context-labels {
+    display:flex; justify-content:space-between;
+    font-family:var(--mono); font-size:11px; color:var(--text-secondary);
+  }
+
+  .session-badge {
+    display:inline-flex; align-items:center; gap:6px;
+    padding:6px 12px; border-radius:6px; font-family:var(--mono); font-size:12px;
+  }
+  .session-badge.active { background:var(--green-bg); border:1px solid var(--green-border); color:var(--green); }
+  .session-badge.idle { background:rgba(122,122,154,.08); border:1px solid rgba(122,122,154,.15); color:var(--text-secondary); }
+
+  .info-row { display:flex; gap:8px; margin-bottom:8px; align-items:baseline; }
+  .info-label { font-size:11px; color:var(--text-muted); width:80px; font-family:var(--mono); }
+  .info-value { font-size:13px; color:var(--text); font-family:var(--mono); }
+
+  /* ── Editor Tab (CLAUDE.md, Settings, Skills) ── */
+  .editor-section { margin-bottom:24px; }
+
+  .editor-header {
+    display:flex; align-items:center; justify-content:space-between;
+    margin-bottom:10px;
+  }
+
+  .editor-header h3 {
+    font-family:var(--mono); font-size:13px; font-weight:500;
+    display:flex; align-items:center; gap:8px;
+  }
+
+  .scope-tag {
+    font-family:var(--mono); font-size:9px; font-weight:600; text-transform:uppercase;
+    letter-spacing:.8px; padding:2px 8px; border-radius:4px;
+    background:rgba(212,160,255,.08); border:1px solid rgba(212,160,255,.15); color:var(--accent);
+  }
+
+  .editor-path {
+    font-family:var(--mono); font-size:11px; color:var(--text-muted); margin-bottom:8px;
+  }
+
+  textarea.editor {
+    width:100%; min-height:200px; max-height:500px;
+    background:var(--bg); border:1px solid var(--border); border-radius:10px;
+    padding:16px; color:var(--text); font-family:var(--mono); font-size:13px;
+    line-height:1.7; resize:vertical; outline:none; transition:border-color .2s;
+  }
+  textarea.editor:focus { border-color:var(--accent-dim); }
+
+  /* ── Permissions visual ── */
+  .perm-group { margin-bottom:16px; }
+  .perm-group-title {
+    font-family:var(--mono); font-size:11px; text-transform:uppercase;
+    letter-spacing:1px; color:var(--text-muted); margin-bottom:8px;
+  }
+
+  .perm-rule {
+    display:flex; align-items:center; gap:10px;
+    padding:8px 12px; border-radius:8px; margin-bottom:4px;
+    background:var(--bg); border:1px solid var(--border);
+    font-family:var(--mono); font-size:12px;
+  }
+
+  .perm-badge {
+    font-size:9px; font-weight:600; text-transform:uppercase; letter-spacing:.6px;
+    padding:2px 8px; border-radius:4px;
+  }
+  .perm-badge.allow { background:rgba(90,250,144,.1); color:var(--green); }
+  .perm-badge.deny { background:rgba(255,107,107,.1); color:var(--red); }
+
+  .perm-tool { color:var(--text); }
+  .perm-remove {
+    margin-left:auto; background:none; border:none; color:var(--text-muted);
+    cursor:pointer; font-size:14px; padding:2px 6px; border-radius:4px;
+  }
+  .perm-remove:hover { color:var(--red); background:rgba(255,107,107,.08); }
+
+  .add-perm-row { display:flex; gap:6px; margin-top:8px; }
+
+  .add-perm-row input {
+    flex:1; background:var(--bg); border:1px solid var(--border); border-radius:6px;
+    padding:7px 12px; color:var(--text); font-family:var(--mono); font-size:12px;
+    outline:none;
+  }
+  .add-perm-row input:focus { border-color:var(--accent-dim); }
+
+  /* ── Skills list ── */
+  .skill-item {
+    background:var(--bg); border:1px solid var(--border); border-radius:10px;
+    padding:14px; margin-bottom:10px;
+  }
+
+  .skill-item-header {
+    display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;
+  }
+
+  .skill-name {
+    font-family:var(--mono); font-size:13px; font-weight:500;
+    display:flex; align-items:center; gap:8px;
+  }
+
+  /* ── Session log ── */
+  .log-entries { max-height:500px; overflow-y:auto; }
+
+  .log-entry {
+    padding:8px 12px; border-radius:6px; margin-bottom:4px;
+    font-family:var(--mono); font-size:11px; line-height:1.5;
+    border-left:3px solid transparent;
+  }
+  .log-entry.role-user { border-left-color:var(--blue); background:rgba(107,170,255,.04); }
+  .log-entry.role-assistant { border-left-color:var(--accent); background:rgba(212,160,255,.04); }
+  .log-entry.role-tool { border-left-color:var(--amber); background:rgba(255,196,77,.04); }
+
+  .log-time { color:var(--text-muted); margin-right:8px; }
+  .log-role { color:var(--text-secondary); margin-right:8px; text-transform:uppercase; font-size:9px; letter-spacing:.5px; }
+  .log-content { color:var(--text); }
+  .log-tool-name { color:var(--amber); }
+
+  /* ── Modal ── */
+  .modal-overlay {
+    position:fixed; inset:0; background:rgba(0,0,0,.7); backdrop-filter:blur(4px);
+    display:flex; align-items:center; justify-content:center; z-index:100;
+    animation:fadeIn .15s;
+  }
+  @keyframes fadeIn { from{opacity:0} }
+
+  .modal {
+    background:var(--bg-surface); border:1px solid var(--border-focus);
+    border-radius:14px; padding:24px; width:90%; max-width:460px;
+    animation:slideUp .2s ease;
+  }
+  @keyframes slideUp { from{transform:translateY(16px);opacity:0} }
+
+  .modal h2 { font-family:var(--mono); font-size:15px; margin-bottom:18px; }
+
+  .field { margin-bottom:14px; }
+  .field label { display:block; font-size:11px; color:var(--text-secondary); margin-bottom:5px; font-family:var(--mono); }
+  .field input, .field select {
+    width:100%; background:var(--bg); border:1px solid var(--border); border-radius:7px;
+    padding:9px 12px; color:var(--text); font-family:var(--mono); font-size:13px; outline:none;
+  }
+  .field input:focus, .field select:focus { border-color:var(--accent-dim); }
+  .field input::placeholder { color:var(--text-muted); }
+
+  .modal-actions { display:flex; gap:8px; margin-top:20px; }
+  .modal-actions .btn { flex:1; justify-content:center; padding:10px; }
+
+  /* ── SSH command box ── */
+  .ssh-box {
+    background:var(--bg); border:1px solid var(--border); border-radius:8px;
+    padding:14px; margin-top:12px;
+  }
+  .ssh-box p { font-size:11px; color:var(--text-secondary); margin-bottom:6px; }
+  .ssh-cmd { font-family:var(--mono); font-size:12px; color:var(--accent); word-break:break-all; user-select:all; }
+
+  /* ── Toast ── */
+  .toast {
+    position:fixed; bottom:20px; right:20px; z-index:200;
+    padding:12px 18px; border-radius:8px; font-size:12px;
+    background:var(--bg-elevated); border:1px solid var(--border-focus);
+    animation:slideIn .25s;
+  }
+  .toast.success { border-color:var(--green-border); color:var(--green); }
+  .toast.error { border-color:rgba(255,107,107,.3); color:var(--red); }
+  @keyframes slideIn { from{transform:translateX(16px);opacity:0} }
+
+  /* ── Empty states ── */
+  .empty {
+    text-align:center; padding:40px; color:var(--text-muted);
+    font-family:var(--mono); font-size:13px;
+  }
+
+  .empty-big { font-size:32px; margin-bottom:12px; }
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width:6px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+  ::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
+  ::-webkit-scrollbar-thumb:hover { background:var(--border-focus); }
+
+  /* ── MCP servers ── */
+  .mcp-server {
+    background:var(--bg); border:1px solid var(--border); border-radius:8px;
+    padding:12px; margin-bottom:8px;
+  }
+  .mcp-name { font-family:var(--mono); font-size:13px; color:var(--accent); margin-bottom:4px; }
+  .mcp-detail { font-family:var(--mono); font-size:11px; color:var(--text-secondary); word-break:break-all; }
+
+  /* ── Terminal Modal ── */
+  .terminal-overlay {
+    position:fixed; inset:0; z-index:1000;
+    background:rgba(0,0,0,.85); backdrop-filter:blur(8px);
+    display:flex; align-items:center; justify-content:center;
+    animation: fadeIn .2s;
+  }
+  .terminal-modal {
+    width: 90vw; height: 82vh;
+    background: #000;
+    border: 1px solid var(--border-focus);
+    border-radius: 12px;
+    display: flex; flex-direction: column;
+    animation: slideUp .25s;
+    overflow: hidden;
+  }
+  .terminal-header {
+    display:flex; align-items:center; justify-content:space-between;
+    padding: 10px 16px;
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border);
+  }
+  .terminal-header-title {
+    font-family: var(--mono); font-size: 12px; color: var(--text-secondary);
+    display:flex; align-items:center; gap:8px;
+  }
+  .terminal-header-title .dot { width:8px; height:8px; border-radius:50%; background:var(--green); }
+  .terminal-close {
+    background:none; border:1px solid var(--border); color:var(--text-secondary);
+    font-family:var(--mono); font-size:11px; padding:4px 12px; border-radius:6px;
+    cursor:pointer; transition:all .15s;
+  }
+  .terminal-close:hover { border-color:var(--red); color:var(--red); }
+  .terminal-body {
+    flex:1; padding: 4px;
+    overflow: hidden;
+  }
+</style>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.js"></script>
+</head>
+<body>
+<div class="app" id="app"></div>
+
+<script>
+// ═══════════ STATE ═══════════
+
+let instances = [];
+let selected = null;       // instance name
+let activeTab = 'overview'; // overview | claude-md | permissions | skills | monitor | mcp
+let modal = null;
+let toast = null;
+let toastTimer = null;
+
+// Data caches per instance
+let cache = {};  // name -> { claudeMd, settings, skills, log, mcp }
+
+// ═══════════ API ═══════════
+
+const api = {
+  async get(url) {
+    const r = await fetch(url);
+    return r.json();
+  },
+  async post(url, body) {
+    const r = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body||{}) });
+    return r.json();
+  },
+  async put(url, body) {
+    const r = await fetch(url, { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+    return r.json();
+  },
+  async del(url, body) {
+    const r = await fetch(url, { method:'DELETE', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+    return r.json();
+  }
+};
+
+async function loadInstances() {
+  instances = await api.get('/api/instances');
+  if (!selected && instances.length) selected = instances[0].name;
+  render();
+}
+
+async function loadTabData() {
+  if (!selected) return;
+  const c = cache[selected] = cache[selected] || {};
+  try {
+    if (activeTab === 'claude-md' && !c.claudeMd) {
+      c.claudeMd = await api.get(`/api/instances/${selected}/claude-md`);
+    }
+    if (activeTab === 'permissions' && !c.settings) {
+      c.settings = await api.get(`/api/instances/${selected}/settings`);
+    }
+    if (activeTab === 'skills' && !c.skills) {
+      c.skills = await api.get(`/api/instances/${selected}/skills`);
+    }
+    if (activeTab === 'monitor') {
+      c.log = await api.get(`/api/instances/${selected}/session-log?limit=80`);
+      c.context = await api.get(`/api/instances/${selected}/context`);
+    }
+    if (activeTab === 'mcp' && !c.mcp) {
+      c.mcp = await api.get(`/api/instances/${selected}/mcp`);
+    }
+  } catch(e) { console.error(e); }
+  render();
+}
+
+async function startSession(name, repo, task, wdir) {
+  try {
+    const r = await api.post(`/api/instances/${name}/start`, { repo, task, working_dir: wdir });
+    if (r.error) throw new Error(r.error);
+    showToast('Session started', 'success');
+    modal = null;
+    await loadInstances();
+  } catch(e) { showToast(e.message, 'error'); }
+}
+
+async function stopSession(name) {
+  if (!confirm(`Stop session on ${name}?`)) return;
+  await api.post(`/api/instances/${name}/stop`);
+  showToast('Session stopped', 'success');
+  delete cache[name];
+  await loadInstances();
+}
+
+async function getConnect(name) {
+  const data = await api.get(`/api/instances/${name}/connect`);
+  modal = { type:'connect', data };
+  render();
+}
+
+async function saveClaudeMd(path, content) {
+  const r = await api.put(`/api/instances/${selected}/claude-md`, { path, content });
+  if (r.ok) {
+    showToast('Saved', 'success');
+    cache[selected].claudeMd = null;
+    loadTabData();
+  } else {
+    showToast('Save failed', 'error');
+  }
+}
+
+async function saveSettings(path, content) {
+  const r = await api.put(`/api/instances/${selected}/settings`, { path, content });
+  if (r.ok) {
+    showToast('Settings saved', 'success');
+    cache[selected].settings = null;
+    loadTabData();
+  } else {
+    showToast('Save failed', 'error');
+  }
+}
+
+async function saveSkill(path, content) {
+  const r = await api.put(`/api/instances/${selected}/skills`, { path, content });
+  if (r.ok) {
+    showToast('Skill saved', 'success');
+    cache[selected].skills = null;
+    loadTabData();
+  } else {
+    showToast('Save failed', 'error');
+  }
+}
+
+async function deleteSkill(path) {
+  if (!confirm(`Delete ${path}?`)) return;
+  await api.del(`/api/instances/${selected}/skills`, { path });
+  showToast('Deleted', 'success');
+  cache[selected].skills = null;
+  loadTabData();
+}
+
+function showToast(msg, type) {
+  clearTimeout(toastTimer);
+  toast = { msg, type };
+  render();
+  toastTimer = setTimeout(() => { toast=null; render(); }, 3000);
+}
+
+// ═══════════ HELPERS ═══════════
+
+function uptime(iso) {
+  if (!iso) return '';
+  const d = Date.now() - new Date(iso).getTime();
+  const m = Math.floor(d/60000);
+  return m < 60 ? `${m}m` : `${Math.floor(m/60)}h ${m%60}m`;
+}
+
+function memPct(s) {
+  if (!s || s==='N/A') return 0;
+  const p = s.split('/');
+  return p.length===2 && parseFloat(p[1])>0 ? (parseFloat(p[0])/parseFloat(p[1]))*100 : 0;
+}
+
+function ctxClass(pct) {
+  return pct < 50 ? 'low' : pct < 80 ? 'mid' : 'high';
+}
+
+const sel = () => instances.find(i => i.name === selected);
+
+// ═══════════ RENDER ═══════════
+
+function render() {
+  const inst = sel();
+  const total = instances.length;
+  const online = instances.filter(i => i.reachable).length;
+  const active = instances.filter(i => i.has_session).length;
+
+  document.getElementById('app').innerHTML = `
+    <aside class="sidebar">
+      <div class="sidebar-logo">
+        <h1><span class="icon">⚡</span> Roster</h1>
+        <small>Claude Roster</small>
+      </div>
+
+      <div class="nav-section">Instances</div>
+      <div class="instance-list">
+        ${instances.map(i => {
+          const dot = !i.reachable ? 'offline' : i.has_session ? 'busy' : 'online';
+          const provCls = ['gcp','aws','local'].includes(i.provider) ? i.provider : 'local';
+          const meta = i.has_session ? (i.repo || i.working_dir?.split('/').pop() || 'active') : (i.type==='remote' ? i.host : 'idle');
+          return `
+            <div class="instance-item ${i.name===selected?'active':''}" onclick="selectInstance('${i.name}')">
+              <span class="dot ${dot}"></span>
+              <div class="info">
+                <div class="name">${i.name}</div>
+                <div class="meta">${meta}</div>
+              </div>
+              <span class="provider-tag ${provCls}">${i.provider}</span>
+            </div>`;
+        }).join('')}
+      </div>
+
+      <div class="sidebar-stats">
+        <div class="s"><div class="v">${total}</div><div class="l">total</div></div>
+        <div class="s"><div class="v" style="color:var(--green)">${online}</div><div class="l">online</div></div>
+        <div class="s"><div class="v" style="color:var(--amber)">${active}</div><div class="l">active</div></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      ${inst ? renderMain(inst) : '<div class="empty" style="margin-top:100px"><div class="empty-big">⚡</div>Select an instance</div>'}
+    </main>
+
+    ${modal ? renderModal() : ''}
+    ${toast ? `<div class="toast ${toast.type}">${toast.msg}</div>` : ''}
+  `;
+}
+
+function renderMain(inst) {
+  return `
+    <div class="main-header">
+      <h2>
+        <span class="dot ${!inst.reachable?'offline':inst.has_session?'busy':'online'}" style="width:10px;height:10px"></span>
+        ${inst.name}
+      </h2>
+      <div class="tabs">
+        ${['overview','claude-md','permissions','skills','monitor','mcp'].map(t =>
+          `<button class="tab ${activeTab===t?'active':''}" onclick="switchTab('${t}')">${t==='claude-md'?'CLAUDE.md':t==='mcp'?'MCP':t.charAt(0).toUpperCase()+t.slice(1)}</button>`
+        ).join('')}
+      </div>
+      <div class="header-actions">
+        ${inst.has_session
+          ? `<button class="btn btn-primary" onclick="openTerminal('${inst.name}')">Terminal</button>
+             <button class="btn btn-green" onclick="getConnect('${inst.name}')">Connect</button>
+             <button class="btn btn-danger" onclick="stopSession('${inst.name}')">Stop</button>`
+          : `<button class="btn btn-primary" onclick="openStartModal('${inst.name}')" ${!inst.reachable?'disabled':''}>Start Session</button>`
+        }
+      </div>
+    </div>
+    <div class="main-content">
+      ${renderTab(inst)}
+    </div>
+  `;
+}
+
+function renderTab(inst) {
+  const c = cache[selected] || {};
+
+  if (activeTab === 'overview') return renderOverview(inst);
+  if (activeTab === 'claude-md') return renderClaudeMd(inst, c.claudeMd);
+  if (activeTab === 'permissions') return renderPermissions(inst, c.settings);
+  if (activeTab === 'skills') return renderSkills(inst, c.skills);
+  if (activeTab === 'monitor') return renderMonitor(inst, c);
+  if (activeTab === 'mcp') return renderMcp(inst, c.mcp);
+  return '';
+}
+
+function renderOverview(inst) {
+  const ctx = inst.context || {};
+  const hasCx = ctx.percent_used !== undefined;
+
+  return `
+    <div class="overview-grid">
+      <div class="card">
+        <div class="card-title">Status</div>
+        <div style="margin-bottom:12px">
+          <span class="session-badge ${inst.has_session?'active':'idle'}">
+            <span class="dot ${inst.has_session?'busy':'online'}" style="width:6px;height:6px"></span>
+            ${inst.has_session ? 'Session Active' : 'Idle'}
+          </span>
+        </div>
+        <div class="info-row"><span class="info-label">Type</span><span class="info-value">${inst.type}</span></div>
+        <div class="info-row"><span class="info-label">Host</span><span class="info-value">${inst.host}</span></div>
+        <div class="info-row"><span class="info-label">User</span><span class="info-value">${inst.user}</span></div>
+        ${inst.working_dir ? `<div class="info-row"><span class="info-label">Dir</span><span class="info-value">${inst.working_dir}</span></div>` : ''}
+        ${inst.repo ? `<div class="info-row"><span class="info-label">Repo</span><span class="info-value">${inst.repo}${inst.branch?' → '+inst.branch:''}</span></div>` : ''}
+        ${inst.task ? `<div class="info-row"><span class="info-label">Task</span><span class="info-value">${inst.task}</span></div>` : ''}
+        ${inst.started_at ? `<div class="info-row"><span class="info-label">Uptime</span><span class="info-value">${uptime(inst.started_at)}</span></div>` : ''}
+      </div>
+
+      <div class="card">
+        <div class="card-title">Resources</div>
+        <div class="resource-row">
+          <span class="label">CPU</span>
+          <div class="bar"><div class="bar-fill" style="width:${parseFloat(inst.cpu)||0}%"></div></div>
+          <span class="val">${inst.cpu||'N/A'}%</span>
+        </div>
+        <div class="resource-row">
+          <span class="label">Mem</span>
+          <div class="bar"><div class="bar-fill" style="width:${memPct(inst.memory)}%"></div></div>
+          <span class="val">${inst.memory||'N/A'} MB</span>
+        </div>
+        <div class="resource-row">
+          <span class="label">Disk</span>
+          <div class="bar"><div class="bar-fill" style="width:${memPct(inst.disk)}%"></div></div>
+          <span class="val">${inst.disk||'N/A'}</span>
+        </div>
+      </div>
+
+      <div class="card" style="grid-column:span 2">
+        <div class="card-title">Context Window</div>
+        ${hasCx ? `
+          <div class="context-meter">
+            <div class="fill ${ctxClass(ctx.percent_used)}" style="width:${ctx.percent_used}%"></div>
+          </div>
+          <div class="context-labels">
+            <span>${ctx.percent_used}% used</span>
+            <span>${(ctx.total_context_used||0).toLocaleString()} / ${(ctx.context_window||200000).toLocaleString()} tokens</span>
+          </div>
+          <div style="display:flex;gap:20px;margin-top:14px">
+            <div class="info-row"><span class="info-label">Input</span><span class="info-value">${(ctx.input_tokens||0).toLocaleString()}</span></div>
+            <div class="info-row"><span class="info-label">Cache R</span><span class="info-value">${(ctx.cache_read_tokens||0).toLocaleString()}</span></div>
+            <div class="info-row"><span class="info-label">Cache W</span><span class="info-value">${(ctx.cache_create_tokens||0).toLocaleString()}</span></div>
+            <div class="info-row"><span class="info-label">Output</span><span class="info-value">${(ctx.output_tokens||0).toLocaleString()}</span></div>
+          </div>
+        ` : `<div class="empty">No active session or no usage data available</div>`}
+      </div>
+    </div>
+  `;
+}
+
+function renderClaudeMd(inst, data) {
+  if (!data) return '<div class="empty">Loading...</div>';
+  if (Object.keys(data).length === 0) return `
+    <div class="empty">
+      <div class="empty-big">📝</div>
+      No CLAUDE.md files found<br>
+      <button class="btn btn-primary" style="margin-top:12px" onclick="createClaudeMd()">Create Project CLAUDE.md</button>
+    </div>`;
+
+  return Object.entries(data).map(([scope, info]) => `
+    <div class="editor-section">
+      <div class="editor-header">
+        <h3><span class="scope-tag">${scope.replace('_',' ')}</span> CLAUDE.md</h3>
+        <button class="btn btn-primary" onclick="doSaveClaudeMd('${info.path}', '${scope}')">Save</button>
+      </div>
+      <div class="editor-path">${info.path}</div>
+      <textarea class="editor" id="md-${scope}" spellcheck="false">${escHtml(info.content)}</textarea>
+    </div>
+  `).join('');
+}
+
+function renderPermissions(inst, data) {
+  if (!data) return '<div class="empty">Loading...</div>';
+  if (Object.keys(data).length === 0) return `
+    <div class="empty">
+      <div class="empty-big">🔒</div>
+      No settings.json files found
+    </div>`;
+
+  return Object.entries(data).map(([scope, info]) => {
+    const perms = info.content?.permissions || {};
+    const allow = perms.allow || [];
+    const deny = perms.deny || [];
+
+    return `
+      <div class="editor-section">
+        <div class="editor-header">
+          <h3><span class="scope-tag">${scope.replace('_',' ')}</span> Permissions</h3>
+          <div style="display:flex;gap:6px">
+            <button class="tab ${!window['rawMode_'+scope]?'active':''}" onclick="window['rawMode_${scope}']=false;render()">Visual</button>
+            <button class="tab ${window['rawMode_'+scope]?'active':''}" onclick="window['rawMode_${scope}']=true;render()">JSON</button>
+          </div>
+        </div>
+        <div class="editor-path">${info.path}</div>
+
+        ${window['rawMode_'+scope] ? `
+          <textarea class="editor" id="settings-${scope}" spellcheck="false" style="min-height:300px">${escHtml(JSON.stringify(info.content, null, 2))}</textarea>
+          <button class="btn btn-primary" style="margin-top:8px" onclick="doSaveSettingsRaw('${info.path}', '${scope}')">Save JSON</button>
+        ` : `
+          <div class="perm-group">
+            <div class="perm-group-title">Allow (${allow.length})</div>
+            ${allow.map((rule, i) => `
+              <div class="perm-rule">
+                <span class="perm-badge allow">allow</span>
+                <span class="perm-tool">${escHtml(rule)}</span>
+                <button class="perm-remove" onclick="removePerm('${scope}', 'allow', ${i})">×</button>
+              </div>
+            `).join('') || '<div style="font-size:12px;color:var(--text-muted);padding:4px 12px">No allow rules</div>'}
+            <div class="add-perm-row">
+              <input id="add-allow-${scope}" placeholder="e.g. Bash(npm run *)" onkeydown="if(event.key==='Enter')addPerm('${scope}','allow')">
+              <button class="btn btn-green" onclick="addPerm('${scope}','allow')">+ Add</button>
+            </div>
+          </div>
+
+          <div class="perm-group">
+            <div class="perm-group-title">Deny (${deny.length})</div>
+            ${deny.map((rule, i) => `
+              <div class="perm-rule">
+                <span class="perm-badge deny">deny</span>
+                <span class="perm-tool">${escHtml(rule)}</span>
+                <button class="perm-remove" onclick="removePerm('${scope}', 'deny', ${i})">×</button>
+              </div>
+            `).join('') || '<div style="font-size:12px;color:var(--text-muted);padding:4px 12px">No deny rules</div>'}
+            <div class="add-perm-row">
+              <input id="add-deny-${scope}" placeholder="e.g. Bash(rm -rf *)" onkeydown="if(event.key==='Enter')addPerm('${scope}','deny')">
+              <button class="btn btn-danger" onclick="addPerm('${scope}','deny')">+ Add</button>
+            </div>
+          </div>
+        `}
+      </div>
+    `;
+  }).join('');
+}
+
+function renderSkills(inst, data) {
+  if (!data) return '<div class="empty">Loading...</div>';
+
+  const wdir = inst.working_dir || '~';
+
+  return `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <div style="font-family:var(--mono);font-size:13px;color:var(--text-secondary)">
+        Custom commands in <code>~/.claude/commands/</code> and <code>.claude/commands/</code>
+      </div>
+      <button class="btn btn-primary" onclick="openNewSkillModal()">+ New Command</button>
+    </div>
+
+    ${data.length === 0 ? '<div class="empty"><div class="empty-big">⚙</div>No custom commands found</div>' : ''}
+
+    ${data.map((s, i) => `
+      <div class="skill-item">
+        <div class="skill-item-header">
+          <div class="skill-name">
+            <span class="scope-tag">${s.scope}</span>
+            /${s.name}
+          </div>
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-ghost" onclick="doSaveSkill('${s.path}', ${i})">Save</button>
+            <button class="btn btn-danger" onclick="deleteSkill('${s.path}')">Delete</button>
+          </div>
+        </div>
+        <div class="editor-path">${s.path}</div>
+        <textarea class="editor" id="skill-${i}" style="min-height:120px" spellcheck="false">${escHtml(s.content)}</textarea>
+      </div>
+    `).join('')}
+  `;
+}
+
+function renderMonitor(inst, c) {
+  if (!inst.has_session) return '<div class="empty"><div class="empty-big">📡</div>No active session to monitor</div>';
+
+  const log = c?.log || [];
+  const ctx = c?.context || {};
+  const hasCx = ctx.percent_used !== undefined;
+
+  return `
+    <div style="display:flex;gap:16px;margin-bottom:20px;flex-wrap:wrap">
+      ${hasCx ? `
+        <div class="card" style="flex:1;min-width:280px">
+          <div class="card-title">Context Window</div>
+          <div class="context-meter">
+            <div class="fill ${ctxClass(ctx.percent_used)}" style="width:${ctx.percent_used}%"></div>
+          </div>
+          <div class="context-labels">
+            <span>${ctx.percent_used}%</span>
+            <span>${(ctx.total_context_used||0).toLocaleString()} / ${(ctx.context_window||200000).toLocaleString()}</span>
+          </div>
+        </div>
+      ` : ''}
+      <div class="card" style="flex:0 0 auto">
+        <div class="card-title">Actions</div>
+        <button class="btn btn-ghost" onclick="refreshMonitor()" style="margin-bottom:6px">Refresh Log</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Session Activity (last ${log.length} entries)</div>
+      <div class="log-entries">
+        ${log.length === 0 ? '<div class="empty">No log entries found</div>' : ''}
+        ${log.map(e => {
+          const role = e.role || (e.tool ? 'tool' : e.type || '');
+          const cls = role==='user' ? 'role-user' : role==='assistant' ? 'role-assistant' : 'role-tool';
+          const time = e.timestamp ? new Date(e.timestamp).toLocaleTimeString() : '';
+          let content = e.content_preview || '';
+          if (e.tool) content = `[${e.tool}] ${content}`;
+          if (e.usage) content += ` (tokens: ${JSON.stringify(e.usage)})`;
+
+          return `<div class="log-entry ${cls}">
+            <span class="log-time">${time}</span>
+            ${role ? `<span class="log-role">${role}</span>` : ''}
+            <span class="log-content">${escHtml(content || e.type || 'event')}</span>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderMcp(inst, data) {
+  if (!data) return '<div class="empty">Loading...</div>';
+  if (Object.keys(data).length === 0) return '<div class="empty"><div class="empty-big">🔌</div>No MCP servers configured</div>';
+
+  return Object.entries(data).map(([scope, info]) => `
+    <div class="editor-section">
+      <div class="editor-header">
+        <h3><span class="scope-tag">${scope}</span> MCP Servers</h3>
+      </div>
+      <div class="editor-path">${info.path}</div>
+      ${Object.entries(info.servers || {}).map(([name, cfg]) => `
+        <div class="mcp-server">
+          <div class="mcp-name">${escHtml(name)}</div>
+          ${cfg.command ? `<div class="mcp-detail">Command: ${escHtml(cfg.command)} ${(cfg.args||[]).map(a=>escHtml(a)).join(' ')}</div>` : ''}
+          ${cfg.url ? `<div class="mcp-detail">URL: ${escHtml(cfg.url)}</div>` : ''}
+          ${cfg.env ? `<div class="mcp-detail">Env: ${Object.keys(cfg.env).join(', ')}</div>` : ''}
+        </div>
+      `).join('')}
+    </div>
+  `).join('');
+}
+
+function renderModal() {
+  if (!modal) return '';
+
+  if (modal.type === 'start') {
+    const gi = modal.gitInfo;
+    const hasGit = gi?.has_git;
+    const loading = modal.loading;
+
+    return `
+      <div class="modal-overlay" onclick="if(event.target===this){modal=null;render();}">
+        <div class="modal">
+          <h2>Start session on ${modal.name}</h2>
+
+          ${loading ? `
+            <div style="padding:16px 0;color:var(--text-secondary);font-size:13px;font-family:var(--mono)">
+              Checking working directory...
+            </div>
+          ` : hasGit ? `
+            <div style="background:var(--green-bg);border:1px solid var(--green-border);border-radius:10px;padding:14px;margin-bottom:16px">
+              <div style="font-family:var(--mono);font-size:12px;color:var(--green);margin-bottom:6px">
+                Git repo detected
+              </div>
+              <div style="font-family:var(--mono);font-size:13px;color:var(--text);margin-bottom:4px">
+                ${escHtml(gi.repo)} <span style="color:var(--text-secondary)">→ ${escHtml(gi.branch)}</span>
+              </div>
+              ${gi.remote && gi.remote !== 'none' ? `<div style="font-family:var(--mono);font-size:11px;color:var(--text-muted);word-break:break-all">${escHtml(gi.remote)}</div>` : ''}
+              ${gi.dirty_files > 0 ? `<div style="font-family:var(--mono);font-size:11px;color:var(--amber);margin-top:4px">${gi.dirty_files} uncommitted change${gi.dirty_files>1?'s':''}</div>` : ''}
+            </div>
+            <div class="field">
+              <label>Working directory</label>
+              <input id="m-dir" value="${escHtml(gi.working_dir || modal.wdir)}" style="color:var(--text-secondary)">
+            </div>
+          ` : `
+            <div style="background:rgba(122,122,154,.06);border:1px solid rgba(122,122,154,.12);border-radius:10px;padding:14px;margin-bottom:16px">
+              <div style="font-family:var(--mono);font-size:12px;color:var(--text-secondary);margin-bottom:4px">
+                No git repo found in working directory
+              </div>
+              <div style="font-size:11px;color:var(--text-muted)">
+                You can clone a repo or point to an existing directory
+              </div>
+            </div>
+            <div class="field">
+              <label>Git repo URL (will be cloned)</label>
+              <input id="m-repo" placeholder="git@github.com:you/project.git">
+            </div>
+            <div class="field">
+              <label>Working directory</label>
+              <input id="m-dir" placeholder="~/projects/myapp" value="${escHtml(modal.wdir)}">
+            </div>
+          `}
+
+          <div class="field">
+            <label>Task note (for your reference)</label>
+            <input id="m-task" placeholder="fix auth bug">
+          </div>
+          <div class="modal-actions">
+            <button class="btn btn-ghost" onclick="modal=null;render()">Cancel</button>
+            <button class="btn btn-primary" onclick="doStart()" ${loading?'disabled':''}>Launch Claude</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  if (modal.type === 'connect') {
+    return `
+      <div class="modal-overlay" onclick="if(event.target===this){modal=null;render();}">
+        <div class="modal">
+          <h2>Connect to session</h2>
+          <p style="color:var(--text-secondary);font-size:13px;margin-bottom:8px">
+            ${modal.data.type==='local' ? 'Run in your terminal:' : 'Paste in your terminal to connect via SSH:'}
+          </p>
+          <div class="ssh-box">
+            <div class="ssh-cmd" id="ssh-text">${modal.data.ssh_command}</div>
+          </div>
+          <div class="modal-actions" style="margin-top:16px">
+            <button class="btn btn-ghost" onclick="modal=null;render()">Close</button>
+            <button class="btn btn-primary" onclick="copyCmd()">Copy to Clipboard</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  if (modal.type === 'new-skill') {
+    const inst = sel();
+    const wdir = inst?.working_dir || '~';
+    return `
+      <div class="modal-overlay" onclick="if(event.target===this){modal=null;render();}">
+        <div class="modal">
+          <h2>New Custom Command</h2>
+          <div class="field">
+            <label>Command name (becomes /name)</label>
+            <input id="ns-name" placeholder="my-command">
+          </div>
+          <div class="field">
+            <label>Scope</label>
+            <select id="ns-scope">
+              <option value="project">Project (.claude/commands/)</option>
+              <option value="global">Global (~/.claude/commands/)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Content (Markdown)</label>
+            <textarea class="editor" id="ns-content" style="min-height:120px" placeholder="Instructions for this command..."></textarea>
+          </div>
+          <div class="modal-actions">
+            <button class="btn btn-ghost" onclick="modal=null;render()">Cancel</button>
+            <button class="btn btn-primary" onclick="doCreateSkill()">Create</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  return '';
+}
+
+// ═══════════ ACTIONS ═══════════
+
+function selectInstance(name) {
+  selected = name;
+  activeTab = 'overview';
+  cache[name] = cache[name] || {};
+  render();
+}
+
+function switchTab(tab) {
+  activeTab = tab;
+  loadTabData();
+  render();
+}
+
+async function openStartModal(name) {
+  const inst = instances.find(i => i.name === name);
+  modal = { type:'start', name, wdir: inst?.working_dir || '', gitInfo: null, loading: true };
+  render();
+
+  // Auto-detect git repo in working directory
+  try {
+    const gitInfo = await api.get(`/api/instances/${name}/git-info`);
+    modal.gitInfo = gitInfo;
+    modal.loading = false;
+  } catch(e) {
+    modal.loading = false;
+  }
+  render();
+  setTimeout(() => document.getElementById('m-task')?.focus(), 50);
+}
+
+function doStart() {
+  const repo = document.getElementById('m-repo')?.value || '';
+  const task = document.getElementById('m-task')?.value || '';
+  const dir = document.getElementById('m-dir')?.value || '';
+  startSession(modal.name, repo, task, dir);
+}
+
+function copyCmd() {
+  const text = document.getElementById('ssh-text')?.textContent || '';
+  navigator.clipboard.writeText(text).then(() => showToast('Copied!', 'success'));
+}
+
+function doSaveClaudeMd(path, scope) {
+  const el = document.getElementById(`md-${scope}`);
+  if (el) saveClaudeMd(path, el.value);
+}
+
+function doSaveSettingsRaw(path, scope) {
+  const el = document.getElementById(`settings-${scope}`);
+  if (!el) return;
+  try {
+    const parsed = JSON.parse(el.value);
+    saveSettings(path, parsed);
+  } catch(e) {
+    showToast('Invalid JSON', 'error');
+  }
+}
+
+function addPerm(scope, type) {
+  const el = document.getElementById(`add-${type}-${scope}`);
+  if (!el || !el.value.trim()) return;
+  const c = cache[selected];
+  const info = c?.settings?.[scope];
+  if (!info) return;
+
+  const content = info.content || {};
+  content.permissions = content.permissions || {};
+  content.permissions[type] = content.permissions[type] || [];
+  content.permissions[type].push(el.value.trim());
+  saveSettings(info.path, content);
+}
+
+function removePerm(scope, type, idx) {
+  const c = cache[selected];
+  const info = c?.settings?.[scope];
+  if (!info) return;
+
+  const content = info.content || {};
+  if (content.permissions?.[type]) {
+    content.permissions[type].splice(idx, 1);
+    saveSettings(info.path, content);
+  }
+}
+
+function openNewSkillModal() {
+  modal = { type:'new-skill' };
+  render();
+}
+
+async function doCreateSkill() {
+  const name = document.getElementById('ns-name')?.value?.trim();
+  const scope = document.getElementById('ns-scope')?.value;
+  const content = document.getElementById('ns-content')?.value || '';
+  if (!name) { showToast('Name required', 'error'); return; }
+
+  const inst = sel();
+  const wdir = inst?.working_dir || '~';
+  const path = scope === 'global' ? `~/.claude/commands/${name}.md` : `${wdir}/.claude/commands/${name}.md`;
+
+  await saveSkill(path, content);
+  modal = null;
+  render();
+}
+
+function doSaveSkill(path, idx) {
+  const el = document.getElementById(`skill-${idx}`);
+  if (el) saveSkill(path, el.value);
+}
+
+async function refreshMonitor() {
+  if (!selected) return;
+  const c = cache[selected] = cache[selected] || {};
+  c.log = await api.get(`/api/instances/${selected}/session-log?limit=80`);
+  c.context = await api.get(`/api/instances/${selected}/context`);
+  render();
+}
+
+function createClaudeMd() {
+  const inst = sel();
+  const wdir = inst?.working_dir || '~';
+  const path = `${wdir}/CLAUDE.md`;
+  saveClaudeMd(path, '# Project Instructions\n\nAdd your Claude Code instructions here.\n');
+}
+
+function escHtml(s) {
+  if (!s) return '';
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ═══════════ TERMINAL ═══════════
+
+let termInstance = null;  // { term, ws, fit, overlay }
+
+function openTerminal(name) {
+  // Create overlay
+  const overlay = document.createElement('div');
+  overlay.className = 'terminal-overlay';
+  overlay.innerHTML = `
+    <div class="terminal-modal">
+      <div class="terminal-header">
+        <div class="terminal-header-title">
+          <span class="dot"></span>
+          <span>${escHtml(name)} — claude session</span>
+        </div>
+        <button class="terminal-close" onclick="closeTerminal()">Disconnect (Esc)</button>
+      </div>
+      <div class="terminal-body" id="terminal-container"></div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  // Prevent overlay click from closing when clicking the modal
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) closeTerminal();
+  });
+
+  // Init xterm.js
+  const term = new Terminal({
+    fontFamily: "'Berkeley Mono', 'JetBrains Mono', 'Fira Code', monospace",
+    fontSize: 14,
+    theme: {
+      background: '#000000',
+      foreground: '#d8d8e8',
+      cursor: '#d4a0ff',
+      cursorAccent: '#000000',
+      selectionBackground: 'rgba(212,160,255,0.3)',
+      black: '#08080c',
+      red: '#ff6b6b',
+      green: '#5afa90',
+      yellow: '#ffc44d',
+      blue: '#6baaff',
+      magenta: '#d4a0ff',
+      cyan: '#6bddff',
+      white: '#d8d8e8',
+      brightBlack: '#3e3e58',
+      brightRed: '#ff8a8a',
+      brightGreen: '#7affa8',
+      brightYellow: '#ffd470',
+      brightBlue: '#8ac0ff',
+      brightMagenta: '#e0b8ff',
+      brightCyan: '#8ae8ff',
+      brightWhite: '#ffffff',
+    },
+    cursorBlink: true,
+    scrollback: 5000,
+    allowProposedApi: true,
+  });
+
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+
+  const webLinks = new WebLinksAddon.WebLinksAddon();
+  term.loadAddon(webLinks);
+
+  const container = document.getElementById('terminal-container');
+  term.open(container);
+  fit.fit();
+
+  // WebSocket
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(`${proto}//${location.host}/api/instances/${name}/terminal`);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    // Send initial size
+    const dims = fit.proposeDimensions();
+    if (dims) {
+      ws.send(`\x01RESIZE:${dims.cols},${dims.rows}`);
+    }
+  };
+
+  ws.onmessage = (e) => {
+    if (e.data instanceof ArrayBuffer) {
+      term.write(new Uint8Array(e.data));
+    } else {
+      term.write(e.data);
+    }
+  };
+
+  ws.onclose = () => {
+    term.write('\r\n\x1b[90m--- session disconnected ---\x1b[0m\r\n');
+  };
+
+  ws.onerror = () => {
+    term.write('\r\n\x1b[31m--- connection error ---\x1b[0m\r\n');
+  };
+
+  // Send keystrokes to backend
+  term.onData((data) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(data);
+    }
+  });
+
+  // Handle binary data (for special keys)
+  term.onBinary((data) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      const buf = new Uint8Array(data.length);
+      for (let i = 0; i < data.length; i++) buf[i] = data.charCodeAt(i);
+      ws.send(buf.buffer);
+    }
+  });
+
+  // Handle resize
+  const resizeObserver = new ResizeObserver(() => {
+    fit.fit();
+    const dims = fit.proposeDimensions();
+    if (dims && ws.readyState === WebSocket.OPEN) {
+      ws.send(`\x01RESIZE:${dims.cols},${dims.rows}`);
+    }
+  });
+  resizeObserver.observe(container);
+
+  // ESC key to close (only on double-press to avoid conflict with terminal ESC)
+  let lastEsc = 0;
+  const escHandler = (e) => {
+    if (e.key === 'Escape') {
+      const now = Date.now();
+      if (now - lastEsc < 500) {
+        closeTerminal();
+      }
+      lastEsc = now;
+    }
+  };
+  document.addEventListener('keydown', escHandler);
+
+  termInstance = { term, ws, fit, overlay, resizeObserver, escHandler, container };
+  term.focus();
+}
+
+function closeTerminal() {
+  if (!termInstance) return;
+  const { term, ws, overlay, resizeObserver, escHandler, container } = termInstance;
+
+  document.removeEventListener('keydown', escHandler);
+  resizeObserver.disconnect();
+
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.close();
+  }
+  term.dispose();
+  overlay.remove();
+  termInstance = null;
+}
+
+// ═══════════ INIT ═══════════
+
+render();
+loadInstances();
+setInterval(loadInstances, 15000);
+</script>
+</body>
+</html>
