@@ -178,17 +178,34 @@ def check_instance(inst: dict) -> dict:
     }
 
 
+def _find_latest_log_cmd(inst: dict) -> str:
+    """Build shell command to find the latest JSONL session log for an instance."""
+    wdir = inst.get("working_dir", "")
+    if wdir:
+        # Claude Code stores logs in ~/.claude/projects/<slug>/<session>.jsonl
+        # Slug is the absolute working dir path with / replaced by -
+        return f"""
+            WDIR="{wdir}"
+            WDIR="${{WDIR/#~/$HOME}}"
+            WDIR=$(cd "$WDIR" 2>/dev/null && pwd || echo "$WDIR")
+            SLUG=$(echo "$WDIR" | sed 's|^/||; s|/|-|g')
+            PROJ_DIR="${{HOME}}/.claude/projects/-${{SLUG}}"
+            if [ -d "$PROJ_DIR" ]; then
+                ls -t "$PROJ_DIR"/*.jsonl 2>/dev/null | head -1
+            fi
+        """
+    return ""
+
+
 def get_context_info(inst: dict) -> dict:
     """Try to read context/token usage from Claude Code session logs."""
-    # Claude stores logs in ~/.config/claude/logs/ as JSONL
-    rc, out, _ = run_cmd(inst, """
-        LOG_DIR="${HOME}/.config/claude/logs"
-        if [ -d "$LOG_DIR" ]; then
-            LATEST=$(ls -t "$LOG_DIR"/*.jsonl 2>/dev/null | head -1)
-            if [ -n "$LATEST" ]; then
-                # Get the last API response with usage info
-                tac "$LATEST" 2>/dev/null | grep -m1 '"usage"' | head -1
-            fi
+    find_cmd = _find_latest_log_cmd(inst)
+    if not find_cmd:
+        return {}
+    rc, out, _ = run_cmd(inst, f"""
+        LATEST=$({find_cmd})
+        if [ -n "$LATEST" ]; then
+            tac "$LATEST" 2>/dev/null | grep -m1 '"usage"' | head -1
         fi
     """, timeout=8)
 
@@ -595,13 +612,14 @@ def api_session_log(name):
     limit = request.args.get("limit", "50")
 
     # Get the latest log file and extract recent entries
+    find_cmd = _find_latest_log_cmd(inst)
+    if not find_cmd:
+        return jsonify([])
+
     rc, out, _ = run_cmd(inst, f"""
-        LOG_DIR="${{HOME}}/.config/claude/logs"
-        if [ -d "$LOG_DIR" ]; then
-            LATEST=$(ls -t "$LOG_DIR"/*.jsonl 2>/dev/null | head -1)
-            if [ -n "$LATEST" ]; then
-                tail -n {limit} "$LATEST"
-            fi
+        LATEST=$({find_cmd})
+        if [ -n "$LATEST" ]; then
+            tail -n {limit} "$LATEST"
         fi
     """, timeout=10)
 
