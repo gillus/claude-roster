@@ -60,7 +60,7 @@ def run_cmd(inst: dict, command: str, timeout: int = 10) -> tuple[int, str, str]
     if inst["type"] == "remote":
         key = os.path.expanduser(inst["key"])
         cmd = [
-            "ssh", "-i", key,
+            "ssh", "-A", "-i", key,
             "-o", "StrictHostKeyChecking=no",
             "-o", "ConnectTimeout=5",
             "-o", "BatchMode=yes",
@@ -106,6 +106,7 @@ def check_instance(inst: dict) -> dict:
         "provider": inst.get("provider", "unknown"),
         "host": inst.get("host", "localhost"),
         "user": inst.get("user", os.environ.get("USER", "")),
+        "config_repo": inst.get("repo", ""),
     }
 
     # Check reachability
@@ -291,20 +292,44 @@ def api_start(name):
         return jsonify({"error": "Not found"}), 404
 
     data = request.json or {}
-    repo = data.get("repo", "")
+    repo = data.get("repo", "") or inst.get("repo", "")
     task = data.get("task", "")
     wdir = data.get("working_dir", inst.get("working_dir", ""))
 
-    cmds = []
+    # Sync repo if configured (clone or pull)
     if repo:
+        if inst["type"] == "remote" and repo.startswith("git@"):
+            if not _ensure_deploy_key(inst):
+                return jsonify({"error": "deploy_key required in config for SSH git repos"}), 400
         repo_name = repo.rstrip("/").split("/")[-1].replace(".git", "")
-        cmds.append(f'[ -d ~/{repo_name} ] && (cd ~/{repo_name} && git pull) || git clone {repo} ~/{repo_name}')
-        wdir = wdir or f"~/{repo_name}"
+        if not wdir:
+            wdir = f"~/{repo_name}"
+        rc, out, err = run_cmd(inst, _build_sync_cmd(repo, wdir), timeout=120)
+        action, sync_rc = _parse_sync_result(rc, out)
+        if sync_rc != 0:
+            return jsonify({"error": f"Git {action} failed: {err or out}"}), 500
 
-    start_dir = os.path.expanduser(wdir) if wdir else "~"
-    cmds.append(f"tmux new-session -d -s claude -c {start_dir} 'claude'")
+    # Ship Claude auth credentials to the VM
+    _ensure_claude_auth(inst)
 
-    rc, _, err = run_cmd(inst, " && ".join(cmds), timeout=30)
+    start_dir = wdir or "~"
+    # Kill any leftover tmux session first
+    run_cmd(inst, "tmux kill-session -t claude 2>/dev/null; true", timeout=5)
+
+    # Build the claude launch command based on runtime
+    if inst.get("runtime") == "docker":
+        # Run Claude Code in Docker, mounting the working dir and config
+        # Only mount .claude.json if it exists; use -it for tmux TTY
+        claude_cmd = (
+            f'SDIR="{start_dir}"; SDIR="${{SDIR/#~/$HOME}}"; '
+            f'MOUNTS="-v $SDIR:/workspace -v $HOME/.claude:/root/.claude"; '
+            f'[ -f "$HOME/.ssh/deploy_key" ] && MOUNTS="$MOUNTS -v $HOME/.ssh/deploy_key:/root/.ssh/deploy_key:ro"; '
+            f'[ -f "$HOME/.claude.json" ] && MOUNTS="$MOUNTS -v $HOME/.claude.json:/root/.claude.json:ro"; '
+            f'docker run --rm -it $MOUNTS claude-code'
+        )
+    else:
+        claude_cmd = f'SDIR="{start_dir}"; SDIR="${{SDIR/#~/$HOME}}"; cd "$SDIR" && claude'
+    rc, _, err = run_cmd(inst, f"tmux new-session -d -s claude '{claude_cmd}'", timeout=30)
     if rc != 0:
         return jsonify({"error": err}), 500
 
@@ -336,7 +361,7 @@ def api_connect(name):
 
     if inst["type"] == "remote":
         key = os.path.expanduser(inst["key"])
-        cmd = f"ssh -i {key} -t {inst['user']}@{inst['host']} 'tmux attach-session -t claude'"
+        cmd = f"ssh -A -i {key} -t {inst['user']}@{inst['host']} 'tmux attach-session -t claude'"
     else:
         cmd = "tmux attach-session -t claude"
 
@@ -351,6 +376,130 @@ def api_refresh(name):
     status = check_instance(inst)
     instance_cache[name] = status
     return jsonify(status)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# API — PROVISIONING (auth, keys)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _ensure_claude_auth(inst: dict) -> bool:
+    """Copy local Claude credentials to the remote VM so it can skip login.
+    Returns True if credentials were shipped (or already exist remotely)."""
+    if inst["type"] != "remote":
+        return True
+
+    local_creds = os.path.expanduser("~/.claude/.credentials.json")
+    if not os.path.isfile(local_creds):
+        return False
+
+    with open(local_creds, "r") as f:
+        creds_content = f.read()
+
+    rc, out, _ = run_cmd(inst, """
+        mkdir -p ~/.claude
+        cat > ~/.claude/.credentials.json << 'CREDEOF'
+%s
+CREDEOF
+        chmod 600 ~/.claude/.credentials.json
+        echo "AUTH:ok"
+    """ % creds_content, timeout=10)
+    return "AUTH:ok" in (out or "")
+
+
+def _ensure_deploy_key(inst: dict) -> bool:
+    """Ship the deploy_key to the remote VM and configure git to use it.
+    Returns True if a deploy key is available on the remote, False otherwise."""
+    deploy_key = inst.get("deploy_key", "")
+    if not deploy_key:
+        return False
+
+    local_key = os.path.expanduser(deploy_key)
+    if not os.path.isfile(local_key):
+        return False
+
+    # Read local key content
+    with open(local_key, "r") as f:
+        key_content = f.read()
+
+    # Write key to remote ~/.ssh/deploy_key, set permissions, configure ssh
+    setup_cmd = """
+        mkdir -p ~/.ssh
+        cat > ~/.ssh/deploy_key << 'KEYEOF'
+%s
+KEYEOF
+        chmod 600 ~/.ssh/deploy_key
+        # Configure git to use this key for all SSH operations
+        git config --global core.sshCommand "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no"
+        echo "DEPLOY_KEY:ok"
+    """ % key_content
+    rc, out, _ = run_cmd(inst, setup_cmd, timeout=15)
+    return "DEPLOY_KEY:ok" in (out or "")
+
+
+def _build_sync_cmd(repo_url: str, working_dir: str) -> str:
+    """Build the shell command to clone or pull a repo."""
+    return f"""
+        WDIR="{working_dir}"
+        WDIR="${{WDIR/#~/$HOME}}"
+        if [ -d "$WDIR/.git" ]; then
+            cd "$WDIR" && git pull 2>&1
+            echo "SYNC_ACTION:pull"
+        else
+            git clone {repo_url} "$WDIR" 2>&1
+            echo "SYNC_ACTION:clone"
+        fi
+        echo "SYNC_RC:$?"
+    """
+
+
+def _parse_sync_result(rc: int, out: str) -> tuple[str, int]:
+    """Parse action and return code from sync command output."""
+    action = "unknown"
+    sync_rc = rc
+    for line in (out or "").split("\n"):
+        if line.startswith("SYNC_ACTION:"):
+            action = line[12:]
+        elif line.startswith("SYNC_RC:"):
+            try:
+                sync_rc = int(line[8:])
+            except ValueError:
+                pass
+    return action, sync_rc
+
+
+@app.route("/api/instances/<name>/sync", methods=["POST"])
+def api_sync(name):
+    """Clone or pull a git repo on the remote instance."""
+    inst = find_instance(name)
+    if not inst:
+        return jsonify({"error": "Not found"}), 404
+
+    data = request.json or {}
+    repo_url = data.get("repo", inst.get("repo", ""))
+    working_dir = data.get("working_dir", inst.get("working_dir", ""))
+
+    if not repo_url:
+        return jsonify({"error": "No repo URL configured"}), 400
+
+    # Ship deploy key to remote if configured
+    if inst["type"] == "remote" and repo_url.startswith("git@"):
+        if not _ensure_deploy_key(inst):
+            return jsonify({"error": "deploy_key required in config for SSH git repos. Add deploy_key: /path/to/key"}), 400
+
+    # Derive target directory from repo URL if no working_dir set
+    repo_name = repo_url.rstrip("/").split("/")[-1].replace(".git", "")
+    if not working_dir:
+        working_dir = f"~/{repo_name}"
+
+    rc, out, err = run_cmd(inst, _build_sync_cmd(repo_url, working_dir), timeout=120)
+    action, sync_rc = _parse_sync_result(rc, out)
+
+    if sync_rc != 0:
+        return jsonify({"error": f"Git {action} failed", "output": out, "stderr": err}), 500
+
+    # Refresh instance status
+    instance_cache[name] = check_instance(inst)
+    return jsonify({"ok": True, "action": action, "working_dir": working_dir, "output": out})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -725,7 +874,7 @@ def terminal_ws(ws, name):
 
     if inst["type"] == "remote":
         key = os.path.expanduser(inst["key"])
-        cmd = ["ssh", "-tt", "-i", key,
+        cmd = ["ssh", "-A", "-tt", "-i", key,
                "-o", "StrictHostKeyChecking=no",
                "-o", "ConnectTimeout=10",
                f"{inst['user']}@{inst['host']}",

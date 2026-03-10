@@ -521,6 +521,16 @@ async function startSession(name, repo, task, wdir) {
   } catch(e) { showToast(e.message, 'error'); }
 }
 
+async function syncRepo(name) {
+  try {
+    showToast('Syncing repo...', 'success');
+    const r = await api.post(`/api/instances/${name}/sync`);
+    if (r.error) throw new Error(r.error);
+    showToast(`Git ${r.action} complete`, 'success');
+    await loadInstances();
+  } catch(e) { showToast(e.message, 'error'); }
+}
+
 async function stopSession(name) {
   if (!confirm(`Stop session on ${name}?`)) return;
   await api.post(`/api/instances/${name}/stop`);
@@ -666,6 +676,7 @@ function renderMain(inst) {
         ).join('')}
       </div>
       <div class="header-actions">
+        ${inst.config_repo && inst.reachable ? `<button class="btn btn-ghost" onclick="syncRepo('${inst.name}')">Sync Repo</button>` : ''}
         ${inst.has_session
           ? `<button class="btn btn-primary" onclick="openTerminal('${inst.name}')">Terminal</button>
              <button class="btn btn-green" onclick="getConnect('${inst.name}')">Connect</button>
@@ -710,6 +721,7 @@ function renderOverview(inst) {
         <div class="info-row"><span class="info-label">Host</span><span class="info-value">${inst.host}</span></div>
         <div class="info-row"><span class="info-label">User</span><span class="info-value">${inst.user}</span></div>
         ${inst.working_dir ? `<div class="info-row"><span class="info-label">Dir</span><span class="info-value">${inst.working_dir}</span></div>` : ''}
+        ${inst.config_repo ? `<div class="info-row"><span class="info-label">Repo (config)</span><span class="info-value" style="word-break:break-all;font-size:11px">${inst.config_repo}</span></div>` : ''}
         ${inst.repo ? `<div class="info-row"><span class="info-label">Repo</span><span class="info-value">${inst.repo}${inst.branch?' → '+inst.branch:''}</span></div>` : ''}
         ${inst.task ? `<div class="info-row"><span class="info-label">Task</span><span class="info-value">${inst.task}</span></div>` : ''}
         ${inst.started_at ? `<div class="info-row"><span class="info-label">Uptime</span><span class="info-value">${uptime(inst.started_at)}</span></div>` : ''}
@@ -978,6 +990,23 @@ function renderModal() {
               <label>Working directory</label>
               <input id="m-dir" value="${escHtml(gi.working_dir || modal.wdir)}" style="color:var(--text-secondary)">
             </div>
+          ` : modal.configRepo ? `
+            <div style="background:rgba(107,170,255,.06);border:1px solid rgba(107,170,255,.15);border-radius:10px;padding:14px;margin-bottom:16px">
+              <div style="font-family:var(--mono);font-size:12px;color:var(--blue);margin-bottom:6px">
+                Repo configured — will clone/pull on start
+              </div>
+              <div style="font-family:var(--mono);font-size:11px;color:var(--text-secondary);word-break:break-all">
+                ${escHtml(modal.configRepo)}
+              </div>
+            </div>
+            <div class="field">
+              <label>Git repo URL (from config)</label>
+              <input id="m-repo" value="${escHtml(modal.configRepo)}">
+            </div>
+            <div class="field">
+              <label>Working directory</label>
+              <input id="m-dir" placeholder="~/projects/myapp" value="${escHtml(modal.wdir)}">
+            </div>
           ` : `
             <div style="background:rgba(122,122,154,.06);border:1px solid rgba(122,122,154,.12);border-radius:10px;padding:14px;margin-bottom:16px">
               <div style="font-family:var(--mono);font-size:12px;color:var(--text-secondary);margin-bottom:4px">
@@ -988,7 +1017,7 @@ function renderModal() {
               </div>
             </div>
             <div class="field">
-              <label>Git repo URL (will be cloned)</label>
+              <label>Git repo URL (will be cloned via SSH agent forwarding)</label>
               <input id="m-repo" placeholder="git@github.com:you/project.git">
             </div>
             <div class="field">
@@ -1078,7 +1107,7 @@ function switchTab(tab) {
 
 async function openStartModal(name) {
   const inst = instances.find(i => i.name === name);
-  modal = { type:'start', name, wdir: inst?.working_dir || '', gitInfo: null, loading: true };
+  modal = { type:'start', name, wdir: inst?.working_dir || '', configRepo: inst?.config_repo || '', gitInfo: null, loading: true };
   render();
 
   // Auto-detect git repo in working directory
