@@ -38,9 +38,23 @@ sessions_meta: dict[str, dict] = {}
 # CONFIG
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _ensure_config():
+    """Create config.yaml with empty instances list if it doesn't exist."""
+    if not os.path.isfile(CONFIG_PATH):
+        with open(CONFIG_PATH, "w") as f:
+            yaml.dump({"instances": []}, f, default_flow_style=False)
+
+
 def load_config() -> dict:
+    _ensure_config()
     with open(CONFIG_PATH, "r") as f:
-        return yaml.safe_load(f)
+        return yaml.safe_load(f) or {"instances": []}
+
+
+def save_config(cfg: dict):
+    """Write config back to disk."""
+    with open(CONFIG_PATH, "w") as f:
+        yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
 
 
 def get_instances() -> list[dict]:
@@ -57,8 +71,14 @@ def find_instance(name: str) -> dict | None:
 
 def run_cmd(inst: dict, command: str, timeout: int = 10) -> tuple[int, str, str]:
     """Run a command on an instance. SSH for remote, local shell for local."""
+    env_vars = inst.get("env", {})
+
     if inst["type"] == "remote":
         key = os.path.expanduser(inst["key"])
+        # Prepend env vars as export statements for remote commands
+        if env_vars:
+            exports = " ".join(f"{k}={v}" for k, v in env_vars.items())
+            command = f"export {exports}; {command}"
         cmd = [
             "ssh", "-A", "-i", key,
             "-o", "StrictHostKeyChecking=no",
@@ -70,8 +90,13 @@ def run_cmd(inst: dict, command: str, timeout: int = 10) -> tuple[int, str, str]
     else:
         cmd = ["bash", "-c", command]
 
+    # Build subprocess env: inherit current env + instance env vars
+    run_env = None
+    if env_vars and inst["type"] == "local":
+        run_env = {**os.environ, **env_vars}
+
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=run_env)
         return r.returncode, r.stdout.strip(), r.stderr.strip()
     except subprocess.TimeoutExpired:
         return -1, "", "timeout"
@@ -107,6 +132,7 @@ def check_instance(inst: dict) -> dict:
         "host": inst.get("host", "localhost"),
         "user": inst.get("user", os.environ.get("USER", "")),
         "config_repo": inst.get("repo", ""),
+        "env": inst.get("env", {}),
     }
 
     # Check reachability
@@ -316,6 +342,13 @@ def api_start(name):
     # Kill any leftover tmux session first
     run_cmd(inst, "tmux kill-session -t claude 2>/dev/null; true", timeout=5)
 
+    # Build env export prefix for the tmux session
+    env_vars = inst.get("env", {})
+    env_prefix = ""
+    if env_vars:
+        exports = " ".join(f'export {k}="{v}";' for k, v in env_vars.items())
+        env_prefix = exports + " "
+
     # Build the claude launch command based on runtime
     if inst.get("runtime") == "docker":
         # Run Claude Code in Docker, mounting the working dir and config
@@ -325,10 +358,10 @@ def api_start(name):
             f'MOUNTS="-v $SDIR:/workspace -v $HOME/.claude:/root/.claude"; '
             f'[ -f "$HOME/.ssh/deploy_key" ] && MOUNTS="$MOUNTS -v $HOME/.ssh/deploy_key:/root/.ssh/deploy_key:ro"; '
             f'[ -f "$HOME/.claude.json" ] && MOUNTS="$MOUNTS -v $HOME/.claude.json:/root/.claude.json:ro"; '
-            f'docker run --rm -it $MOUNTS claude-code'
+            f'{env_prefix}docker run --rm -it $MOUNTS claude-code'
         )
     else:
-        claude_cmd = f'SDIR="{start_dir}"; SDIR="${{SDIR/#~/$HOME}}"; cd "$SDIR" && claude'
+        claude_cmd = f'{env_prefix}SDIR="{start_dir}"; SDIR="${{SDIR/#~/$HOME}}"; cd "$SDIR" && claude'
     rc, _, err = run_cmd(inst, f"tmux new-session -d -s claude '{claude_cmd}'", timeout=30)
     if rc != 0:
         return jsonify({"error": err}), 500
@@ -376,6 +409,137 @@ def api_refresh(name):
     status = check_instance(inst)
     instance_cache[name] = status
     return jsonify(status)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# API — INSTANCE CRUD (config management)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/instances", methods=["POST"])
+def api_create_instance():
+    """Create a new instance in config.yaml."""
+    data = request.json or {}
+    name = data.get("name", "").strip()
+    if not name:
+        return jsonify({"error": "name is required"}), 400
+
+    cfg = load_config()
+    instances = cfg.get("instances", [])
+
+    if any(i["name"] == name for i in instances):
+        return jsonify({"error": f"Instance '{name}' already exists"}), 409
+
+    inst_type = data.get("type", "local")
+    inst = {"name": name, "type": inst_type}
+
+    if inst_type == "remote":
+        for field in ["host", "user", "key"]:
+            val = data.get(field, "").strip()
+            if not val:
+                return jsonify({"error": f"{field} is required for remote instances"}), 400
+            inst[field] = val
+        inst["provider"] = data.get("provider", "gcp").strip() or "gcp"
+    else:
+        inst["working_dir"] = data.get("working_dir", "").strip()
+        inst["provider"] = "local"
+
+    if data.get("repo"):
+        inst["repo"] = data["repo"].strip()
+    if data.get("deploy_key"):
+        inst["deploy_key"] = data["deploy_key"].strip()
+    if data.get("runtime"):
+        inst["runtime"] = data["runtime"].strip()
+    if data.get("env") and isinstance(data["env"], dict):
+        inst["env"] = {k.strip(): v.strip() for k, v in data["env"].items() if k.strip()}
+
+    instances.append(inst)
+    cfg["instances"] = instances
+    save_config(cfg)
+
+    # Trigger initial status check
+    status = check_instance(inst)
+    instance_cache[name] = status
+    return jsonify({"ok": True, "instance": status}), 201
+
+
+@app.route("/api/instances/<name>", methods=["PUT"])
+def api_update_instance(name):
+    """Update an existing instance in config.yaml."""
+    data = request.json or {}
+    cfg = load_config()
+    instances = cfg.get("instances", [])
+
+    idx = next((i for i, inst in enumerate(instances) if inst["name"] == name), None)
+    if idx is None:
+        return jsonify({"error": "Not found"}), 404
+
+    inst = instances[idx]
+    inst_type = data.get("type", inst["type"])
+    inst["type"] = inst_type
+
+    if inst_type == "remote":
+        for field in ["host", "user", "key"]:
+            if field in data:
+                inst[field] = data[field].strip()
+        if "provider" in data:
+            inst["provider"] = data["provider"].strip() or "gcp"
+    else:
+        if "working_dir" in data:
+            inst["working_dir"] = data["working_dir"].strip()
+        inst["provider"] = "local"
+        # Clean up remote-only fields
+        for field in ["host", "user", "key"]:
+            inst.pop(field, None)
+
+    for field in ["repo", "deploy_key", "runtime"]:
+        if field in data:
+            val = data[field].strip() if data[field] else ""
+            if val:
+                inst[field] = val
+            else:
+                inst.pop(field, None)
+
+    if "env" in data:
+        if isinstance(data["env"], dict) and data["env"]:
+            inst["env"] = {k.strip(): v.strip() for k, v in data["env"].items() if k.strip()}
+        else:
+            inst.pop("env", None)
+
+    instances[idx] = inst
+    cfg["instances"] = instances
+    save_config(cfg)
+
+    # Refresh status
+    status = check_instance(inst)
+    instance_cache[name] = status
+    return jsonify({"ok": True, "instance": status})
+
+
+@app.route("/api/instances/<name>", methods=["DELETE"])
+def api_delete_instance(name):
+    """Remove an instance from config.yaml."""
+    cfg = load_config()
+    instances = cfg.get("instances", [])
+
+    new_instances = [i for i in instances if i["name"] != name]
+    if len(new_instances) == len(instances):
+        return jsonify({"error": "Not found"}), 404
+
+    cfg["instances"] = new_instances
+    save_config(cfg)
+
+    instance_cache.pop(name, None)
+    sessions_meta.pop(name, None)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/instances/<name>/config")
+def api_get_instance_config(name):
+    """Get raw config for an instance (for editing)."""
+    inst = find_instance(name)
+    if not inst:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(inst)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -379,6 +379,29 @@
   .toast.error { border-color:rgba(255,107,107,.3); color:var(--red); }
   @keyframes slideIn { from{transform:translateX(16px);opacity:0} }
 
+  /* ── Add Instance button ── */
+  .add-instance-btn {
+    display:flex; align-items:center; justify-content:center; gap:6px;
+    margin: 8px 12px; padding:9px; border-radius:8px;
+    border:1px dashed var(--border); background:transparent;
+    color:var(--text-muted); font-family:var(--mono); font-size:11px;
+    cursor:pointer; transition:all .15s;
+  }
+  .add-instance-btn:hover { border-color:var(--accent-dim); color:var(--accent); background:rgba(212,160,255,.04); }
+
+  /* ── Env vars editor ── */
+  .env-row {
+    display:flex; gap:6px; margin-bottom:6px; align-items:center;
+  }
+  .env-row input { flex:1; background:var(--bg); border:1px solid var(--border); border-radius:6px;
+    padding:7px 10px; color:var(--text); font-family:var(--mono); font-size:12px; outline:none; }
+  .env-row input:focus { border-color:var(--accent-dim); }
+  .env-row .env-remove {
+    background:none; border:none; color:var(--text-muted); cursor:pointer;
+    font-size:16px; padding:4px 6px; border-radius:4px;
+  }
+  .env-row .env-remove:hover { color:var(--red); }
+
   /* ── Empty states ── */
   .empty {
     text-align:center; padding:40px; color:var(--text-muted);
@@ -484,7 +507,7 @@ const api = {
 async function loadInstances() {
   instances = await api.get('/api/instances');
   if (!selected && instances.length) selected = instances[0].name;
-  render();
+  if (!modal) render();
 }
 
 async function loadTabData() {
@@ -647,6 +670,8 @@ function render() {
         }).join('')}
       </div>
 
+      <button class="add-instance-btn" onclick="openInstanceModal()">+ Add Instance</button>
+
       <div class="sidebar-stats">
         <div class="s"><div class="v">${total}</div><div class="l">total</div></div>
         <div class="s"><div class="v" style="color:var(--green)">${online}</div><div class="l">online</div></div>
@@ -655,7 +680,7 @@ function render() {
     </aside>
 
     <main class="main">
-      ${inst ? renderMain(inst) : '<div class="empty" style="margin-top:100px"><div class="empty-big">⚡</div>Select an instance</div>'}
+      ${inst ? renderMain(inst) : `<div class="empty" style="margin-top:100px"><div class="empty-big">⚡</div>${instances.length ? 'Select an instance' : 'No instances configured'}<br><button class="btn btn-primary" style="margin-top:12px" onclick="openInstanceModal()">+ Add Instance</button></div>`}
     </main>
 
     ${modal ? renderModal() : ''}
@@ -676,6 +701,8 @@ function renderMain(inst) {
         ).join('')}
       </div>
       <div class="header-actions">
+        <button class="btn btn-ghost" onclick="openInstanceModal('${inst.name}')">Edit</button>
+        <button class="btn btn-danger" onclick="deleteInstance('${inst.name}')">Delete</button>
         ${inst.config_repo && inst.reachable ? `<button class="btn btn-ghost" onclick="syncRepo('${inst.name}')">Sync Repo</button>` : ''}
         ${inst.has_session
           ? `<button class="btn btn-primary" onclick="openTerminal('${inst.name}')">Terminal</button>
@@ -725,6 +752,7 @@ function renderOverview(inst) {
         ${inst.repo ? `<div class="info-row"><span class="info-label">Repo</span><span class="info-value">${inst.repo}${inst.branch?' → '+inst.branch:''}</span></div>` : ''}
         ${inst.task ? `<div class="info-row"><span class="info-label">Task</span><span class="info-value">${inst.task}</span></div>` : ''}
         ${inst.started_at ? `<div class="info-row"><span class="info-label">Uptime</span><span class="info-value">${uptime(inst.started_at)}</span></div>` : ''}
+        ${inst.env && Object.keys(inst.env).length ? `<div class="info-row"><span class="info-label">Env</span><span class="info-value">${Object.keys(inst.env).join(', ')}</span></div>` : ''}
       </div>
 
       <div class="card">
@@ -1087,6 +1115,98 @@ function renderModal() {
       </div>`;
   }
 
+  if (modal.type === 'instance') {
+    const editing = modal.editing;  // null for new, instance name for edit
+    const d = modal.data || {};
+    const envPairs = modal.envPairs || [];
+
+    return `
+      <div class="modal-overlay" onclick="if(event.target===this){modal=null;render();}">
+        <div class="modal" style="max-width:520px">
+          <h2>${editing ? `Edit ${escHtml(editing)}` : 'Add Instance'}</h2>
+
+          <div class="field">
+            <label>Instance name</label>
+            <input id="inst-name" value="${escHtml(d.name || '')}" ${editing ? 'disabled style="opacity:.5"' : ''} placeholder="my-instance">
+          </div>
+
+          <div class="field">
+            <label>Type</label>
+            <select id="inst-type" onchange="updateInstanceModal()">
+              <option value="local" ${d.type !== 'remote' ? 'selected' : ''}>Local</option>
+              <option value="remote" ${d.type === 'remote' ? 'selected' : ''}>Remote (SSH)</option>
+            </select>
+          </div>
+
+          <div id="inst-remote-fields" style="display:${d.type === 'remote' ? 'block' : 'none'}">
+            <div class="field">
+              <label>Host (IP or hostname)</label>
+              <input id="inst-host" value="${escHtml(d.host || '')}" placeholder="34.xxx.xxx.xxx">
+            </div>
+            <div class="field">
+              <label>User</label>
+              <input id="inst-user" value="${escHtml(d.user || '')}" placeholder="ubuntu">
+            </div>
+            <div class="field">
+              <label>SSH key path</label>
+              <input id="inst-key" value="${escHtml(d.key || '')}" placeholder="~/.ssh/id_rsa">
+            </div>
+            <div class="field">
+              <label>Provider</label>
+              <select id="inst-provider">
+                <option value="gcp" ${d.provider === 'gcp' ? 'selected' : ''}>GCP</option>
+                <option value="aws" ${d.provider === 'aws' ? 'selected' : ''}>AWS</option>
+                <option value="other" ${d.provider && !['gcp','aws','local'].includes(d.provider) ? 'selected' : ''}>Other</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Deploy key (optional, for git SSH repos)</label>
+              <input id="inst-deploy-key" value="${escHtml(d.deploy_key || '')}" placeholder="~/.ssh/deploy_key">
+            </div>
+          </div>
+
+          <div id="inst-local-fields" style="display:${d.type !== 'remote' ? 'block' : 'none'}">
+            <div class="field">
+              <label>Working directory</label>
+              <input id="inst-wdir" value="${escHtml(d.working_dir || '')}" placeholder="/home/user/project">
+            </div>
+          </div>
+
+          <div class="field">
+            <label>Git repo URL (optional)</label>
+            <input id="inst-repo" value="${escHtml(d.repo || '')}" placeholder="git@github.com:user/repo.git">
+          </div>
+
+          <div class="field">
+            <label>Runtime</label>
+            <select id="inst-runtime">
+              <option value="" ${!d.runtime ? 'selected' : ''}>Default (native)</option>
+              <option value="docker" ${d.runtime === 'docker' ? 'selected' : ''}>Docker</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label>Environment variables</label>
+            <div id="env-pairs">
+              ${envPairs.map((p, i) => `
+                <div class="env-row">
+                  <input placeholder="KEY" value="${escHtml(p.key)}" onchange="modal.envPairs[${i}].key=this.value">
+                  <input placeholder="value" value="${escHtml(p.val)}" onchange="modal.envPairs[${i}].val=this.value">
+                  <button class="env-remove" onclick="modal.envPairs.splice(${i},1);render()">×</button>
+                </div>
+              `).join('')}
+            </div>
+            <button class="btn btn-ghost" style="margin-top:4px;font-size:10px;padding:5px 10px" onclick="modal.envPairs.push({key:'',val:''});render()">+ Add Variable</button>
+          </div>
+
+          <div class="modal-actions">
+            <button class="btn btn-ghost" onclick="modal=null;render()">Cancel</button>
+            <button class="btn btn-primary" onclick="doSaveInstance()">${editing ? 'Save Changes' : 'Create Instance'}</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
   return '';
 }
 
@@ -1097,6 +1217,91 @@ function selectInstance(name) {
   activeTab = 'overview';
   cache[name] = cache[name] || {};
   render();
+}
+
+async function openInstanceModal(editName) {
+  if (editName) {
+    // Edit mode: fetch current config
+    try {
+      const data = await api.get(`/api/instances/${editName}/config`);
+      const envPairs = Object.entries(data.env || {}).map(([key, val]) => ({key, val}));
+      modal = { type:'instance', editing: editName, data, envPairs };
+    } catch(e) {
+      showToast('Failed to load config', 'error');
+      return;
+    }
+  } else {
+    // Create mode
+    modal = { type:'instance', editing: null, data: { type:'local' }, envPairs: [] };
+  }
+  render();
+}
+
+function updateInstanceModal() {
+  const t = document.getElementById('inst-type')?.value;
+  document.getElementById('inst-remote-fields').style.display = t === 'remote' ? 'block' : 'none';
+  document.getElementById('inst-local-fields').style.display = t !== 'remote' ? 'block' : 'none';
+}
+
+async function doSaveInstance() {
+  const editing = modal?.editing;
+  const instType = document.getElementById('inst-type')?.value || 'local';
+  const name = document.getElementById('inst-name')?.value?.trim();
+  if (!name) { showToast('Name is required', 'error'); return; }
+
+  const body = { name, type: instType };
+
+  if (instType === 'remote') {
+    body.host = document.getElementById('inst-host')?.value?.trim() || '';
+    body.user = document.getElementById('inst-user')?.value?.trim() || '';
+    body.key = document.getElementById('inst-key')?.value?.trim() || '';
+    body.provider = document.getElementById('inst-provider')?.value || 'gcp';
+    body.deploy_key = document.getElementById('inst-deploy-key')?.value?.trim() || '';
+  } else {
+    body.working_dir = document.getElementById('inst-wdir')?.value?.trim() || '';
+  }
+
+  body.repo = document.getElementById('inst-repo')?.value?.trim() || '';
+  body.runtime = document.getElementById('inst-runtime')?.value || '';
+
+  // Collect env pairs from modal state (inputs update modal.envPairs via onchange)
+  const env = {};
+  (modal?.envPairs || []).forEach(p => {
+    const k = p.key?.trim();
+    const v = p.val?.trim();
+    if (k) env[k] = v || '';
+  });
+  body.env = env;
+
+  try {
+    let r;
+    if (editing) {
+      r = await api.put(`/api/instances/${editing}`, body);
+    } else {
+      r = await api.post('/api/instances', body);
+    }
+    if (r.error) throw new Error(r.error);
+    showToast(editing ? 'Instance updated' : 'Instance created', 'success');
+    modal = null;
+    await loadInstances();
+    if (!editing) selected = name;
+    render();
+  } catch(e) {
+    showToast(e.message, 'error');
+  }
+}
+
+async function deleteInstance(name) {
+  if (!confirm(`Delete instance "${name}"? This only removes it from config.`)) return;
+  try {
+    const r = await api.del(`/api/instances/${name}`);
+    if (r.error) throw new Error(r.error);
+    showToast('Instance deleted', 'success');
+    if (selected === name) selected = null;
+    await loadInstances();
+  } catch(e) {
+    showToast(e.message, 'error');
+  }
 }
 
 function switchTab(tab) {
