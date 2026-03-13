@@ -30,8 +30,29 @@ app = Flask(__name__, static_folder="static")
 sock = Sock(app)
 
 CONFIG_PATH = os.environ.get("CCM_CONFIG", os.path.join(os.path.dirname(__file__), "config.yaml"))
+SESSIONS_PATH = os.path.join(os.path.dirname(__file__), "sessions.json")
 instance_cache: dict[str, dict] = {}
 sessions_meta: dict[str, dict] = {}
+
+
+def _load_sessions():
+    """Load persisted sessions_meta from disk."""
+    global sessions_meta
+    if os.path.isfile(SESSIONS_PATH):
+        try:
+            with open(SESSIONS_PATH, "r") as f:
+                sessions_meta = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            sessions_meta = {}
+
+
+def _save_sessions():
+    """Persist sessions_meta to disk."""
+    try:
+        with open(SESSIONS_PATH, "w") as f:
+            json.dump(sessions_meta, f, indent=2)
+    except IOError as e:
+        print(f"[sessions] Failed to save: {e}", file=sys.stderr)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -65,6 +86,18 @@ def find_instance(name: str) -> dict | None:
     return next((i for i in get_instances() if i["name"] == name), None)
 
 
+def tmux_session_name(inst: dict) -> str:
+    """Return the tmux session name for an instance.
+
+    Remote instances each run on their own VM, so a plain 'claude' session is fine.
+    Local instances share the same machine, so we namespace by instance name to
+    avoid collisions.
+    """
+    if inst["type"] == "remote":
+        return "claude"
+    return f"claude-{inst['name']}"
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # COMMAND EXECUTION (SSH for remote, subprocess for local)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -74,19 +107,19 @@ def run_cmd(inst: dict, command: str, timeout: int = 10) -> tuple[int, str, str]
     env_vars = inst.get("env", {})
 
     if inst["type"] == "remote":
-        key = os.path.expanduser(inst["key"])
         # Prepend env vars as export statements for remote commands
         if env_vars:
             exports = " ".join(f"{k}={v}" for k, v in env_vars.items())
             command = f"export {exports}; {command}"
         cmd = [
-            "ssh", "-A", "-i", key,
+            "ssh", "-A",
             "-o", "StrictHostKeyChecking=no",
             "-o", "ConnectTimeout=5",
             "-o", "BatchMode=yes",
-            f"{inst['user']}@{inst['host']}",
-            command,
         ]
+        if "key" in inst:
+            cmd += ["-i", os.path.expanduser(inst["key"])]
+        cmd += [f"{inst['user']}@{inst['host']}", command]
     else:
         cmd = ["bash", "-c", command]
 
@@ -144,7 +177,8 @@ def check_instance(inst: dict) -> dict:
         base["reachable"] = True
 
     # Check for tmux claude session
-    rc, out, _ = run_cmd(inst, "tmux has-session -t claude 2>/dev/null && echo yes || echo no")
+    sess = tmux_session_name(inst)
+    rc, out, _ = run_cmd(inst, f"tmux has-session -t {sess} 2>/dev/null && echo yes || echo no")
     has_session = out.strip() == "yes"
 
     # System stats
@@ -166,7 +200,7 @@ def check_instance(inst: dict) -> dict:
     working_dir = ""
     if has_session:
         rc, sess_out, _ = run_cmd(inst, """
-            pane_pid=$(tmux list-panes -t claude -F '#{pane_pid}' 2>/dev/null | head -1)
+            pane_pid=$(tmux list-panes -t %s -F '#{pane_pid}' 2>/dev/null | head -1)
             if [ -n "$pane_pid" ]; then
                 cwd=$(readlink -f /proc/$pane_pid/cwd 2>/dev/null || echo "")
                 echo "CWD:${cwd}"
@@ -175,7 +209,7 @@ def check_instance(inst: dict) -> dict:
                     echo "BRANCH:$(git -C $cwd branch --show-current 2>/dev/null)"
                 fi
             fi
-        """)
+        """ % sess)
         for line in (sess_out or "").split("\n"):
             if line.startswith("CWD:"):
                 working_dir = line[4:]
@@ -294,6 +328,13 @@ def poll_loop():
                 t.join(timeout=15)
 
             instance_cache.update(results)
+
+            # Clean up sessions whose tmux session no longer exists
+            stale = [n for n in sessions_meta if n in results and not results[n].get("has_session")]
+            if stale:
+                for n in stale:
+                    sessions_meta.pop(n, None)
+                _save_sessions()
         except Exception as e:
             print(f"[poller] {e}", file=sys.stderr)
         time.sleep(15)
@@ -311,6 +352,12 @@ def api_instances():
     return jsonify(list(instance_cache.values()))
 
 
+start_status: dict[str, str] = {}
+
+@app.route("/api/instances/<name>/start-status")
+def api_start_status(name):
+    return jsonify({"stage": start_status.get(name, "")})
+
 @app.route("/api/instances/<name>/start", methods=["POST"])
 def api_start(name):
     inst = find_instance(name)
@@ -322,55 +369,86 @@ def api_start(name):
     task = data.get("task", "")
     wdir = data.get("working_dir", inst.get("working_dir", ""))
 
-    # Sync repo if configured (clone or pull)
-    if repo:
-        if inst["type"] == "remote" and repo.startswith("git@"):
-            if not _ensure_deploy_key(inst):
-                return jsonify({"error": "deploy_key required in config for SSH git repos"}), 400
-        repo_name = repo.rstrip("/").split("/")[-1].replace(".git", "")
-        if not wdir:
-            wdir = f"~/{repo_name}"
-        rc, out, err = run_cmd(inst, _build_sync_cmd(repo, wdir), timeout=120)
-        action, sync_rc = _parse_sync_result(rc, out)
-        if sync_rc != 0:
-            return jsonify({"error": f"Git {action} failed: {err or out}"}), 500
+    try:
+        # Sync repo if configured (clone or pull)
+        if repo:
+            start_status[name] = "Syncing repository..."
+            if inst["type"] == "remote" and repo.startswith("git@"):
+                if not _ensure_deploy_key(inst):
+                    return jsonify({"error": "deploy_key required in config for SSH git repos"}), 400
+            repo_name = repo.rstrip("/").split("/")[-1].replace(".git", "")
+            if not wdir:
+                wdir = f"~/{repo_name}"
+            rc, out, err = run_cmd(inst, _build_sync_cmd(repo, wdir), timeout=120)
+            action, sync_rc = _parse_sync_result(rc, out)
+            if sync_rc != 0:
+                return jsonify({"error": f"Git {action} failed: {err or out}"}), 500
 
-    # Ship Claude auth credentials to the VM
-    _ensure_claude_auth(inst)
+        # Ship Claude auth credentials to the VM
+        start_status[name] = "Shipping credentials..."
+        _ensure_claude_auth(inst)
 
-    start_dir = wdir or "~"
-    # Kill any leftover tmux session first
-    run_cmd(inst, "tmux kill-session -t claude 2>/dev/null; true", timeout=5)
+        start_dir = wdir or "~"
+        sess = tmux_session_name(inst)
+        # Kill any leftover tmux session first
+        run_cmd(inst, f"tmux kill-session -t {sess} 2>/dev/null; true", timeout=5)
 
-    # Build env export prefix for the tmux session
-    env_vars = inst.get("env", {})
-    env_prefix = ""
-    if env_vars:
-        exports = " ".join(f'export {k}="{v}";' for k, v in env_vars.items())
-        env_prefix = exports + " "
+        # Build env export prefix for the tmux session
+        env_vars = inst.get("env", {})
+        env_prefix = ""
+        if env_vars:
+            exports = " ".join(f'export {k}="{v}";' for k, v in env_vars.items())
+            env_prefix = exports + " "
 
-    # Build the claude launch command based on runtime
-    if inst.get("runtime") == "docker":
-        # Run Claude Code in Docker, mounting the working dir and config
-        # Only mount .claude.json if it exists; use -it for tmux TTY
-        claude_cmd = (
-            f'SDIR="{start_dir}"; SDIR="${{SDIR/#~/$HOME}}"; '
-            f'MOUNTS="-v $SDIR:/workspace -v $HOME/.claude:/root/.claude"; '
-            f'[ -f "$HOME/.ssh/deploy_key" ] && MOUNTS="$MOUNTS -v $HOME/.ssh/deploy_key:/root/.ssh/deploy_key:ro"; '
-            f'[ -f "$HOME/.claude.json" ] && MOUNTS="$MOUNTS -v $HOME/.claude.json:/root/.claude.json:ro"; '
-            f'{env_prefix}docker run --rm -it $MOUNTS claude-code'
-        )
-    else:
-        claude_cmd = f'{env_prefix}SDIR="{start_dir}"; SDIR="${{SDIR/#~/$HOME}}"; cd "$SDIR" && claude'
-    rc, _, err = run_cmd(inst, f"tmux new-session -d -s claude '{claude_cmd}'", timeout=30)
-    if rc != 0:
-        return jsonify({"error": err}), 500
+        # Pre-seed workspace trust in .claude.json so the trust dialog is skipped
+        if inst.get("runtime") == "docker":
+            run_cmd(inst, """python3 -c "
+import json, os
+p = os.path.expanduser('~/.claude.json')
+try:
+    d = json.load(open(p))
+except: d = {}
+proj = d.setdefault('projects', {})
+ws = proj.setdefault('/workspace', {})
+ws['hasTrustDialogAccepted'] = True
+d['hasCompletedOnboarding'] = True
+json.dump(d, open(p, 'w'), indent=2)
+" """, timeout=10)
+
+        # Ensure docker image exists on target if needed
+        if inst.get("runtime") == "docker":
+            start_status[name] = "Checking Docker image..."
+            ok, img_err = _ensure_docker_image(inst)
+            if not ok:
+                return jsonify({"error": f"Docker image setup failed: {img_err}"}), 500
+
+        # Build the claude launch command based on runtime
+        start_status[name] = "Launching session..."
+        if inst.get("runtime") == "docker":
+            # Run Claude Code in Docker, mounting the working dir and config
+            # Only mount .claude.json if it exists; use -it for tmux TTY
+            claude_cmd = (
+                f'SDIR="{start_dir}"; SDIR="${{SDIR/#~/$HOME}}"; '
+                f'MOUNTS="-v $SDIR:/workspace"; '
+                f'[ -f "$HOME/.claude/.credentials.json" ] && MOUNTS="$MOUNTS -v $HOME/.claude/.credentials.json:/root/.claude/.credentials.json"; '
+                f'[ -f "$HOME/.ssh/deploy_key" ] && MOUNTS="$MOUNTS -v $HOME/.ssh/deploy_key:/root/.ssh/deploy_key:ro"; '
+                f'[ -f "$HOME/.claude.json" ] && MOUNTS="$MOUNTS -v $HOME/.claude.json:/root/.claude.json"; '
+                f'{env_prefix}docker run --rm --init -it $MOUNTS claude-code'
+            )
+        else:
+            claude_cmd = f'{env_prefix}SDIR="{start_dir}"; SDIR="${{SDIR/#~/$HOME}}"; cd "$SDIR" && claude'
+        rc, _, err = run_cmd(inst, f"tmux new-session -d -s {sess} '{claude_cmd}'", timeout=30)
+        if rc != 0:
+            return jsonify({"error": err}), 500
+    finally:
+        start_status.pop(name, None)
 
     sessions_meta[name] = {
         "repo": repo.rstrip("/").split("/")[-1].replace(".git", "") if repo else "",
         "task": task,
         "started_at": datetime.now(timezone.utc).isoformat(),
     }
+    _save_sessions()
     instance_cache[name] = check_instance(inst)
     return jsonify({"ok": True})
 
@@ -380,8 +458,10 @@ def api_stop(name):
     inst = find_instance(name)
     if not inst:
         return jsonify({"error": "Not found"}), 404
-    run_cmd(inst, "tmux kill-session -t claude 2>/dev/null; echo done")
+    sess = tmux_session_name(inst)
+    run_cmd(inst, f"tmux kill-session -t {sess} 2>/dev/null; echo done")
     sessions_meta.pop(name, None)
+    _save_sessions()
     instance_cache[name] = check_instance(inst)
     return jsonify({"ok": True})
 
@@ -392,11 +472,12 @@ def api_connect(name):
     if not inst:
         return jsonify({"error": "Not found"}), 404
 
+    sess = tmux_session_name(inst)
     if inst["type"] == "remote":
-        key = os.path.expanduser(inst["key"])
-        cmd = f"ssh -A -i {key} -t {inst['user']}@{inst['host']} 'tmux attach-session -t claude'"
+        key_part = f"-i {os.path.expanduser(inst['key'])} " if "key" in inst else ""
+        cmd = f"ssh -A {key_part}-t {inst['user']}@{inst['host']} 'tmux attach-session -t {sess}'"
     else:
-        cmd = "tmux attach-session -t claude"
+        cmd = f"tmux attach-session -t {sess}"
 
     return jsonify({"ssh_command": cmd, "type": inst["type"]})
 
@@ -545,6 +626,30 @@ def api_get_instance_config(name):
 # ═══════════════════════════════════════════════════════════════════════════════
 # API — PROVISIONING (auth, keys)
 # ═══════════════════════════════════════════════════════════════════════════════
+
+def _ensure_docker_image(inst: dict) -> tuple[bool, str]:
+    """Ensure the claude-code Docker image exists on the instance.
+    Builds it from Dockerfile.claude if missing. Returns (success, error_msg)."""
+    rc, out, _ = run_cmd(inst, "docker image inspect claude-code >/dev/null 2>&1 && echo EXISTS", timeout=10)
+    if "EXISTS" in (out or ""):
+        return True, ""
+
+    # Read local Dockerfile.claude
+    dockerfile_path = os.path.join(os.path.dirname(__file__), "Dockerfile.claude")
+    if not os.path.isfile(dockerfile_path):
+        return False, "Dockerfile.claude not found locally"
+
+    with open(dockerfile_path, "r") as f:
+        dockerfile_content = f.read()
+
+    # Ship Dockerfile to remote and build
+    start_status[inst["name"]] = "Building Docker image (this may take a few minutes)..."
+    write_remote_file(inst, "/tmp/Dockerfile.claude", dockerfile_content)
+    rc, out, err = run_cmd(inst, "docker build -t claude-code -f /tmp/Dockerfile.claude /tmp", timeout=600)
+    if rc != 0:
+        return False, f"Docker build failed: {err or out}"
+    return True, ""
+
 
 def _ensure_claude_auth(inst: dict) -> bool:
     """Copy local Claude credentials to the remote VM so it can skip login.
@@ -1036,19 +1141,39 @@ def terminal_ws(ws, name):
         ws.send("\r\nInstance not found.\r\n")
         return
 
+    sess = tmux_session_name(inst)
     if inst["type"] == "remote":
-        key = os.path.expanduser(inst["key"])
-        cmd = ["ssh", "-A", "-tt", "-i", key,
+        cmd = ["ssh", "-A", "-tt",
                "-o", "StrictHostKeyChecking=no",
-               "-o", "ConnectTimeout=10",
-               f"{inst['user']}@{inst['host']}",
-               "tmux attach-session -t claude || tmux new-session -s claude"]
+               "-o", "ConnectTimeout=10"]
+        if "key" in inst:
+            cmd += ["-i", os.path.expanduser(inst["key"])]
+        cmd += [f"{inst['user']}@{inst['host']}",
+                f"tmux attach-session -t {sess} || tmux new-session -s {sess}"]
     else:
-        cmd = ["tmux", "attach-session", "-t", "claude"]
+        cmd = ["tmux", "attach-session", "-t", sess]
 
     child_pid, fd = pty.fork()
     if child_pid == 0:
         os.execvp(cmd[0], cmd)
+
+    # Set a sane default PTY size immediately (before client resize arrives)
+    try:
+        winsize = struct.pack("HHHH", 24, 80, 0, 0)
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
+    except OSError:
+        pass
+
+    # Wait briefly for the client's initial RESIZE message with actual dimensions
+    try:
+        msg = ws.receive(timeout=2)
+        if msg and isinstance(msg, str) and msg.startswith("\x01RESIZE:"):
+            parts = msg[8:].split(",")
+            cols, rows = int(parts[0]), int(parts[1])
+            winsize = struct.pack("HHHH", rows, cols, 0, 0)
+            fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
+    except Exception:
+        pass
 
     # Queue for pty output → main thread sends to WS
     outq = queue.Queue()
@@ -1149,6 +1274,10 @@ def static_files(path):
 
 def main():
     port = int(os.environ.get("CCM_PORT", 8420))
+
+    _load_sessions()
+    if sessions_meta:
+        print(f"  Restored {len(sessions_meta)} session(s) from disk")
 
     poller = threading.Thread(target=poll_loop, daemon=True)
     poller.start()

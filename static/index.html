@@ -339,6 +339,12 @@
   }
   @keyframes fadeIn { from{opacity:0} }
 
+  .spinner {
+    width:18px;height:18px;border:2px solid var(--border);border-top-color:var(--blue);
+    border-radius:50%;animation:spin .8s linear infinite;
+  }
+  @keyframes spin { to{transform:rotate(360deg)} }
+
   .modal {
     background:var(--bg-surface); border:1px solid var(--border-focus);
     border-radius:14px; padding:24px; width:90%; max-width:460px;
@@ -536,12 +542,28 @@ async function loadTabData() {
 
 async function startSession(name, repo, task, wdir) {
   try {
+    modal.starting = true;
+    modal.startStatus = 'Preparing session...';
+    render();
+
+    // Poll for status updates while the start request is in-flight
+    const statusInterval = setInterval(async () => {
+      try {
+        const s = await api.get(`/api/instances/${name}/start-status`);
+        if (s.stage) { modal.startStatus = s.stage; render(); }
+      } catch(_) {}
+    }, 1500);
+
     const r = await api.post(`/api/instances/${name}/start`, { repo, task, working_dir: wdir });
+    clearInterval(statusInterval);
     if (r.error) throw new Error(r.error);
     showToast('Session started', 'success');
     modal = null;
     await loadInstances();
-  } catch(e) { showToast(e.message, 'error'); }
+  } catch(e) {
+    if (modal) { modal.starting = false; modal.startStatus = ''; render(); }
+    showToast(e.message, 'error');
+  }
 }
 
 async function syncRepo(name) {
@@ -1058,10 +1080,17 @@ function renderModal() {
             <label>Task note (for your reference)</label>
             <input id="m-task" placeholder="fix auth bug">
           </div>
+          ${modal.starting ? `
+          <div style="display:flex;align-items:center;gap:10px;padding:12px 0">
+            <div class="spinner"></div>
+            <span style="font-family:var(--mono);font-size:13px;color:var(--text-secondary)">${escHtml(modal.startStatus || 'Preparing...')}</span>
+          </div>
+          ` : `
           <div class="modal-actions">
             <button class="btn btn-ghost" onclick="modal=null;render()">Cancel</button>
             <button class="btn btn-primary" onclick="doStart()" ${loading?'disabled':''}>Launch Claude</button>
           </div>
+          `}
         </div>
       </div>`;
   }
