@@ -954,8 +954,8 @@ def api_get_skills(name):
 
     skills = []
 
-    # Global custom commands
-    rc, out, _ = run_cmd(inst, "ls ~/.claude/commands/*.md 2>/dev/null", timeout=5)
+    # Global skills
+    rc, out, _ = run_cmd(inst, "ls ~/.claude/skills/*/SKILL.md 2>/dev/null", timeout=5)
     if rc == 0 and out:
         for fpath in out.split("\n"):
             if fpath.strip():
@@ -963,13 +963,13 @@ def api_get_skills(name):
                 skills.append({
                     "scope": "global",
                     "path": fpath.strip(),
-                    "name": os.path.basename(fpath.strip()).replace(".md", ""),
+                    "name": Path(fpath.strip()).parent.name,
                     "content": content or "",
                 })
 
-    # Project custom commands
+    # Project skills
     if wdir:
-        rc, out, _ = run_cmd(inst, f"ls {wdir}/.claude/commands/*.md 2>/dev/null", timeout=5)
+        rc, out, _ = run_cmd(inst, f"ls {wdir}/.claude/skills/*/SKILL.md 2>/dev/null", timeout=5)
         if rc == 0 and out:
             for fpath in out.split("\n"):
                 if fpath.strip():
@@ -977,7 +977,7 @@ def api_get_skills(name):
                     skills.append({
                         "scope": "project",
                         "path": fpath.strip(),
-                        "name": os.path.basename(fpath.strip()).replace(".md", ""),
+                        "name": Path(fpath.strip()).parent.name,
                         "content": content or "",
                     })
 
@@ -998,6 +998,9 @@ def api_save_skill(name):
     if not path:
         return jsonify({"error": "path required"}), 400
 
+    # Ensure the skill directory exists (e.g. .claude/skills/my-skill/)
+    parent = str(Path(path).parent)
+    run_cmd(inst, f"mkdir -p {parent}", timeout=5)
     ok = write_remote_file(inst, path, content)
     return jsonify({"ok": ok})
 
@@ -1012,7 +1015,9 @@ def api_delete_skill(name):
     if not path:
         return jsonify({"error": "path required"}), 400
 
-    rc, _, _ = run_cmd(inst, f"rm -f {path}")
+    # Remove the entire skill directory (e.g. .claude/skills/my-skill/)
+    skill_dir = str(Path(path).parent)
+    rc, _, _ = run_cmd(inst, f"rm -rf {skill_dir}")
     return jsonify({"ok": rc == 0})
 
 

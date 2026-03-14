@@ -910,9 +910,9 @@ function renderSkills(inst, data) {
   return `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
       <div style="font-family:var(--mono);font-size:13px;color:var(--text-secondary)">
-        Custom commands in <code>~/.claude/commands/</code> and <code>.claude/commands/</code>
+        Custom skills in <code>~/.claude/skills/</code> and <code>.claude/skills/</code>
       </div>
-      <button class="btn btn-primary" onclick="openNewSkillModal()">+ New Command</button>
+      <button class="btn btn-primary" onclick="openNewSkillModal()">+ New Skill</button>
     </div>
 
     ${data.length === 0 ? '<div class="empty"><div class="empty-big">⚙</div>No custom commands found</div>' : ''}
@@ -1128,8 +1128,8 @@ function renderModal() {
           <div class="field">
             <label>Scope</label>
             <select id="ns-scope">
-              <option value="project">Project (.claude/commands/)</option>
-              <option value="global">Global (~/.claude/commands/)</option>
+              <option value="project">Project (.claude/skills/)</option>
+              <option value="global">Global (~/.claude/skills/)</option>
             </select>
           </div>
           <div class="field">
@@ -1423,7 +1423,7 @@ async function doCreateSkill() {
 
   const inst = sel();
   const wdir = inst?.working_dir || '~';
-  const path = scope === 'global' ? `~/.claude/commands/${name}.md` : `${wdir}/.claude/commands/${name}.md`;
+  const path = scope === 'global' ? `~/.claude/skills/${name}/SKILL.md` : `${wdir}/.claude/skills/${name}/SKILL.md`;
 
   await saveSkill(path, content);
   modal = null;
