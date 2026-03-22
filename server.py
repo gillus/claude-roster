@@ -87,14 +87,8 @@ def find_instance(name: str) -> dict | None:
 
 
 def tmux_session_name(inst: dict) -> str:
-    """Return the tmux session name for an instance.
-
-    Remote instances each run on their own VM, so a plain 'claude' session is fine.
-    Local instances share the same machine, so we namespace by instance name to
-    avoid collisions.
-    """
-    if inst["type"] == "remote":
-        return "claude"
+    """Return the tmux session name for an instance, namespaced to avoid
+    collisions when multiple instances share the same host."""
     return f"claude-{inst['name']}"
 
 
@@ -390,8 +384,10 @@ def api_start(name):
 
         start_dir = wdir or "~"
         sess = tmux_session_name(inst)
-        # Kill any leftover tmux session first
+        # Kill any leftover tmux session and docker container first
         run_cmd(inst, f"tmux kill-session -t {sess} 2>/dev/null; true", timeout=5)
+        if inst.get("runtime") == "docker":
+            run_cmd(inst, f"docker rm -f claude-{name} 2>/dev/null; true", timeout=10)
 
         # Build env export prefix for the tmux session
         env_vars = inst.get("env", {})
@@ -429,11 +425,11 @@ json.dump(d, open(p, 'w'), indent=2)
             # Only mount .claude.json if it exists; use -it for tmux TTY
             claude_cmd = (
                 f'SDIR="{start_dir}"; SDIR="${{SDIR/#~/$HOME}}"; '
-                f'MOUNTS="-v $SDIR:/workspace"; '
-                f'[ -f "$HOME/.claude/.credentials.json" ] && MOUNTS="$MOUNTS -v $HOME/.claude/.credentials.json:/root/.claude/.credentials.json"; '
+                f'mkdir -p "$HOME/.claude"; '
+                f'MOUNTS="-v $SDIR:/workspace -v $HOME/.claude:/root/.claude"; '
                 f'[ -f "$HOME/.ssh/deploy_key" ] && MOUNTS="$MOUNTS -v $HOME/.ssh/deploy_key:/root/.ssh/deploy_key:ro"; '
                 f'[ -f "$HOME/.claude.json" ] && MOUNTS="$MOUNTS -v $HOME/.claude.json:/root/.claude.json"; '
-                f'{env_prefix}docker run --rm --init -it $MOUNTS claude-code'
+                f'{env_prefix}docker run --rm --init -it --name claude-{name} $MOUNTS claude-code'
             )
         else:
             claude_cmd = f'{env_prefix}SDIR="{start_dir}"; SDIR="${{SDIR/#~/$HOME}}"; cd "$SDIR" && claude'
@@ -460,6 +456,8 @@ def api_stop(name):
         return jsonify({"error": "Not found"}), 404
     sess = tmux_session_name(inst)
     run_cmd(inst, f"tmux kill-session -t {sess} 2>/dev/null; echo done")
+    if inst.get("runtime") == "docker":
+        run_cmd(inst, f"docker rm -f claude-{name} 2>/dev/null; true", timeout=10)
     sessions_meta.pop(name, None)
     _save_sessions()
     instance_cache[name] = check_instance(inst)
