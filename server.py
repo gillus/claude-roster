@@ -86,10 +86,15 @@ def find_instance(name: str) -> dict | None:
     return next((i for i in get_instances() if i["name"] == name), None)
 
 
+def sanitize_name(name: str) -> str:
+    """Sanitize instance name for use in tmux sessions and Docker containers."""
+    return re.sub(r'[^a-zA-Z0-9_-]', '-', name).strip('-').lower()
+
+
 def tmux_session_name(inst: dict) -> str:
     """Return the tmux session name for an instance, namespaced to avoid
     collisions when multiple instances share the same host."""
-    return f"claude-{inst['name']}"
+    return f"claude-{sanitize_name(inst['name'])}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -364,12 +369,25 @@ def api_start(name):
     wdir = data.get("working_dir", inst.get("working_dir", ""))
 
     try:
+        # Pre-flight: verify SSH connectivity for remote instances
+        if inst["type"] == "remote":
+            start_status[name] = "Checking SSH connectivity..."
+            rc, _, err = run_cmd(inst, "echo ok", timeout=10)
+            if rc != 0:
+                return jsonify({"error": f"SSH connection failed: {err}"}), 500
+
         # Sync repo if configured (clone or pull)
         if repo:
             start_status[name] = "Syncing repository..."
             if inst["type"] == "remote" and repo.startswith("git@"):
                 if not _ensure_deploy_key(inst):
-                    return jsonify({"error": "deploy_key required in config for SSH git repos"}), 400
+                    # No deploy key configured — check if SSH agent forwarding works
+                    rc, out, err = run_cmd(inst, "ssh -o StrictHostKeyChecking=no -T git@github.com 2>&1; true", timeout=10)
+                    # GitHub returns exit code 1 with "successfully authenticated" on success
+                    combined = f"{out} {err}"
+                    if "successfully authenticated" not in combined:
+                        return jsonify({"error": "Git SSH auth failed: no deploy_key in config and SSH agent forwarding is not working. "
+                                        "Either add deploy_key to the instance config or ensure ssh-agent has your key loaded (ssh-add)."}), 400
             repo_name = repo.rstrip("/").split("/")[-1].replace(".git", "")
             if not wdir:
                 wdir = f"~/{repo_name}"
@@ -385,9 +403,10 @@ def api_start(name):
         start_dir = wdir or "~"
         sess = tmux_session_name(inst)
         # Kill any leftover tmux session and docker container first
+        cname = sanitize_name(name)
         run_cmd(inst, f"tmux kill-session -t {sess} 2>/dev/null; true", timeout=5)
         if inst.get("runtime") == "docker":
-            run_cmd(inst, f"docker rm -f claude-{name} 2>/dev/null; true", timeout=10)
+            run_cmd(inst, f"docker rm -f claude-{cname} 2>/dev/null; true", timeout=10)
 
         # Build env export prefix for the tmux session
         env_vars = inst.get("env", {})
@@ -428,8 +447,9 @@ json.dump(d, open(p, 'w'), indent=2)
                 f'mkdir -p "$HOME/.claude"; '
                 f'MOUNTS="-v $SDIR:/workspace -v $HOME/.claude:/root/.claude"; '
                 f'[ -f "$HOME/.ssh/deploy_key" ] && MOUNTS="$MOUNTS -v $HOME/.ssh/deploy_key:/root/.ssh/deploy_key:ro"; '
+                f'[ -f "$HOME/.gitconfig" ] && MOUNTS="$MOUNTS -v $HOME/.gitconfig:/root/.gitconfig:ro"; '
                 f'[ -f "$HOME/.claude.json" ] && MOUNTS="$MOUNTS -v $HOME/.claude.json:/root/.claude.json"; '
-                f'{env_prefix}docker run --rm --init -it --name claude-{name} $MOUNTS claude-code'
+                f'{env_prefix}docker run --rm --init -it --name claude-{cname} $MOUNTS claude-code'
             )
         else:
             claude_cmd = f'{env_prefix}SDIR="{start_dir}"; SDIR="${{SDIR/#~/$HOME}}"; cd "$SDIR" && claude'
@@ -455,9 +475,10 @@ def api_stop(name):
     if not inst:
         return jsonify({"error": "Not found"}), 404
     sess = tmux_session_name(inst)
+    cname = sanitize_name(name)
     run_cmd(inst, f"tmux kill-session -t {sess} 2>/dev/null; echo done")
     if inst.get("runtime") == "docker":
-        run_cmd(inst, f"docker rm -f claude-{name} 2>/dev/null; true", timeout=10)
+        run_cmd(inst, f"docker rm -f claude-{cname} 2>/dev/null; true", timeout=10)
     sessions_meta.pop(name, None)
     _save_sessions()
     instance_cache[name] = check_instance(inst)
@@ -710,12 +731,18 @@ def _build_sync_cmd(repo_url: str, working_dir: str) -> str:
         WDIR="${{WDIR/#~/$HOME}}"
         if [ -d "$WDIR/.git" ]; then
             cd "$WDIR" && git pull 2>&1
+            SYNC_EXIT=$?
             echo "SYNC_ACTION:pull"
+        elif [ -d "$WDIR" ] && [ ! -w "$WDIR" ]; then
+            echo "Directory $WDIR exists but is not writable (owned by $(stat -c '%U' "$WDIR" 2>/dev/null || echo unknown))" 2>&1
+            SYNC_EXIT=1
+            echo "SYNC_ACTION:clone"
         else
             git clone {repo_url} "$WDIR" 2>&1
+            SYNC_EXIT=$?
             echo "SYNC_ACTION:clone"
         fi
-        echo "SYNC_RC:$?"
+        echo "SYNC_RC:$SYNC_EXIT"
     """
 
 
@@ -751,7 +778,12 @@ def api_sync(name):
     # Ship deploy key to remote if configured
     if inst["type"] == "remote" and repo_url.startswith("git@"):
         if not _ensure_deploy_key(inst):
-            return jsonify({"error": "deploy_key required in config for SSH git repos. Add deploy_key: /path/to/key"}), 400
+            # No deploy key — check SSH agent forwarding
+            rc, out, err = run_cmd(inst, "ssh -o StrictHostKeyChecking=no -T git@github.com 2>&1; true", timeout=10)
+            combined = f"{out} {err}"
+            if "successfully authenticated" not in combined:
+                return jsonify({"error": "Git SSH auth failed: no deploy_key in config and SSH agent forwarding is not working. "
+                                "Either add deploy_key to the instance config or ensure ssh-agent has your key loaded (ssh-add)."}), 400
 
     # Derive target directory from repo URL if no working_dir set
     repo_name = repo_url.rstrip("/").split("/")[-1].replace(".git", "")
@@ -762,7 +794,7 @@ def api_sync(name):
     action, sync_rc = _parse_sync_result(rc, out)
 
     if sync_rc != 0:
-        return jsonify({"error": f"Git {action} failed", "output": out, "stderr": err}), 500
+        return jsonify({"error": f"Git {action} failed: {err or out}"}), 500
 
     # Refresh instance status
     instance_cache[name] = check_instance(inst)
